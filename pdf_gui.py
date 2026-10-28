@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.10.1"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -2341,6 +2341,7 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         self.selected_pages = set()
         self.page_orientation = None  # None: sayfalar dosyadaki gibi, "dikey" veya "yatay"
         self.tool_mode = "gez"
+        self._te = None  # yazı düzenleme oturumu (sayfada önizleme)
         self._drag_start = None
         self._sel_id = None
         self._save_mode = None        # None: sorulmadı, "overwrite" veya "copy"
@@ -2771,6 +2772,8 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
 
     def _on_tool_change(self):
         self.tool_mode = self.tool_var.get()
+        if self._te and self.tool_mode != "metin":
+            self._te_cancel()
         cursors = {"gez": "fleur", "kopyala": "xterm", "not": "plus", "metin": "xterm", "gorsel": "plus"}
         self.canvas.configure(cursor=cursors.get(self.tool_mode, "crosshair"))
         for key, _icon, tip in self.TOOLS:
@@ -3711,6 +3714,9 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
     def on_canvas_press(self, event):
         self.canvas.focus_set()
         cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        if self._te and self.tool_mode == "metin" and not self.is_welcome:
+            self._te_press(cx, cy)
+            return
         self._drag_start = (cx, cy)
         mode = self.tool_mode
         if mode == "gez":
@@ -3725,6 +3731,9 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             self._sel_id = self.canvas.create_line(cx, cy, cx, cy, fill=self.theme["accent_dark"], width=2)
 
     def on_canvas_drag(self, event):
+        if self._te and self._te.get("drag"):
+            self._te_motion(self.canvas.canvasx(event.x), self.canvas.canvasy(event.y))
+            return
         if self._drag_start is None:
             return
         if self.tool_mode == "gez":
@@ -3741,6 +3750,9 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             self.canvas.coords(self._sel_id, *self._drag_start, cx, cy)
 
     def on_canvas_release(self, event):
+        if self._te and self._te.get("drag"):
+            self._te["drag"] = None
+            return
         start, self._drag_start = self._drag_start, None
         if self._sel_id is not None:
             self.canvas.delete(self._sel_id)
@@ -3903,315 +3915,284 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         page.add_text_annot(point * page.derotation_matrix, text).update()
         self.render_all_pages()
 
+    # --- Yazı ekleme: düzenleme doğrudan açık sayfada yapılır; küçük bir biçim paneli yanında durur ---
     def _tool_metin(self, index, point):
-        result = self._text_designer(index, point)
-        if not result:
+        """İlk tıklama yazı düzenlemeyi başlatır; sonraki tıklamalar yazı çerçevesini o noktaya getirir."""
+        if getattr(self, "_te", None):
+            self._te_move_to(index, point)
             return
-        page = self.doc[index]
-        self._record_edit()
-        draw_text_block(page, fitz.Point(result["pos"]), result["text"], result["style"])
-        self.render_all_pages()
-        self._toast("Yazı eklendi (Ctrl+Z ile geri alınır)")
+        self._te_start(index, point)
 
-    def _text_designer(self, index, point):
-        """Yazı ekleme penceresi: tüm biçim denetimleri (yazı tipi, boyut, kalın, italik, altı/üstü çizili, renk,
-        saydamlık, hizalama, satır aralığı, açı) ve sayfa önizlemesinde çerçeveli, sürüklenebilir yazı.
-        Onay verilince {"text", "style", "pos"} döner; İptal'de None. Sayfaya hiçbir şey yazılmadan önce onay alınır."""
-        from tkinter import colorchooser
-        page = self.doc[index]
+    def _te_start(self, index, point):
         t = self.theme
         style0 = dict(getattr(self, "_text_style", None) or default_text_style())
-        prect = fitz.Rect(page.rect)
-        pos = [min(max(point.x, prect.x0), prect.x1 - 8), min(max(point.y, prect.y0), prect.y1 - 8)]
-        state = {"scale": 1.0, "page_img": None, "text_img": None, "color": tuple(style0["color"]),
-                 "job": None, "drag": None, "result": None}
-        win = tk.Toplevel(self)
-        win.title(f"Yazı ekle — sayfa {index + 1}")
-        win.transient(self)
-        win.geometry("1060x720")
-        win.minsize(820, 560)
-        win.columnconfigure(1, weight=1)
-        win.rowconfigure(0, weight=1)
-        left = ttk.Frame(win, padding=10)
-        left.grid(row=0, column=0, sticky="ns")
-        right = ttk.Frame(win, padding=(0, 10, 10, 10))
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(1, weight=1)
-
-        ttk.Label(left, text="Yazı").grid(row=0, column=0, columnspan=4, sticky="w")
-        box = tk.Text(left, width=34, height=6, wrap="word", bg=t["entry"], fg=t["text"], relief="flat",
+        fonts = text_font_families()
+        panel = tk.Toplevel(self)
+        panel.title("Yazı biçimi")
+        panel.transient(self)
+        panel.resizable(False, False)
+        te = {"index": index, "pos": [point.x, point.y], "panel": panel, "color": tuple(style0["color"]),
+              "job": None, "drag": None, "key": None, "img": None}
+        self._te = te
+        v = te["vars"] = {
+            "family": tk.StringVar(value=style0["family"] if style0["family"] in fonts else fonts[0]),
+            "size": tk.StringVar(value="%g" % style0["size"]),
+            "bold": tk.BooleanVar(value=style0["bold"]), "italic": tk.BooleanVar(value=style0["italic"]),
+            "underline": tk.BooleanVar(value=style0["underline"]), "strike": tk.BooleanVar(value=style0["strike"]),
+            "align": tk.StringVar(value=style0["align"]), "opacity": tk.IntVar(value=int(round(style0["opacity"] * 100))),
+            "spacing": tk.StringVar(value="%g" % style0["spacing"]), "angle": tk.StringVar(value="%g" % style0["angle"])}
+        body = ttk.Frame(panel, padding=10)
+        body.grid(row=0, column=0)
+        ttk.Label(body, text="Yazı (sayfada önizlenir)").grid(row=0, column=0, columnspan=4, sticky="w")
+        box = tk.Text(body, width=32, height=4, wrap="word", bg=t["entry"], fg=t["text"], relief="flat",
                       highlightthickness=1, highlightbackground=t["card_border"], font=(FONT_UI, 10),
                       insertbackground=t["text"], undo=True)
-        box.grid(row=1, column=0, columnspan=4, pady=(2, 8))
+        box.grid(row=1, column=0, columnspan=4, pady=(2, 6))
+        te["box"] = box
 
-        family_var = tk.StringVar(value=style0["family"] if style0["family"] in text_font_families() else text_font_families()[0])
-        size_var = tk.StringVar(value=("%g" % style0["size"]))
-        bold_var = tk.BooleanVar(value=style0["bold"])
-        italic_var = tk.BooleanVar(value=style0["italic"])
-        under_var = tk.BooleanVar(value=style0["underline"])
-        strike_var = tk.BooleanVar(value=style0["strike"])
-        align_var = tk.StringVar(value=style0["align"])
-        opacity_var = tk.IntVar(value=int(round(style0["opacity"] * 100)))
-        spacing_var = tk.StringVar(value=("%g" % style0["spacing"]))
-        angle_var = tk.StringVar(value=("%g" % style0["angle"]))
-        zoom_var = tk.StringVar(value="Sığdır")
+        ttk.Label(body, text="Yazı tipi").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Combobox(body, textvariable=v["family"], values=fonts, state="readonly", width=17).grid(
+            row=2, column=1, columnspan=3, sticky="w")
+        ttk.Label(body, text="Boyut (pt)").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Spinbox(body, from_=4, to=300, increment=1, textvariable=v["size"], width=6).grid(row=3, column=1, sticky="w")
+        toggles = ttk.Frame(body)
+        toggles.grid(row=3, column=2, columnspan=2, sticky="e")
+        for text, key, fnt in (("K", "bold", (FONT_UI, 10, "bold")), ("İ", "italic", (FONT_UI, 10, "italic")),
+                               ("A", "underline", (FONT_UI, 10, "underline")), ("Ü", "strike", (FONT_UI, 10, "overstrike"))):
+            tk.Checkbutton(toggles, text=text, variable=v[key], indicatoron=False, width=2, font=fnt, bg=t["panel"],
+                           fg=t["text"], selectcolor=t["accent"], activebackground=t["accent"], relief="raised",
+                           bd=1).pack(side="left", padx=1)
+        ttk.Label(body, text="K kalın · İ italik · A altı çizili · Ü üstü çizili", foreground=t["muted"]).grid(
+            row=4, column=0, columnspan=4, sticky="w")
 
-        ttk.Label(left, text="Yazı tipi").grid(row=2, column=0, sticky="w", pady=3)
-        ttk.Combobox(left, textvariable=family_var, values=text_font_families(), state="readonly",
-                     width=20).grid(row=2, column=1, columnspan=3, sticky="w", pady=3)
-        ttk.Label(left, text="Boyut (pt)").grid(row=3, column=0, sticky="w", pady=3)
-        ttk.Spinbox(left, from_=4, to=300, increment=1, textvariable=size_var, width=7).grid(row=3, column=1, sticky="w")
-
-        toggles = ttk.Frame(left)
-        toggles.grid(row=4, column=0, columnspan=4, sticky="w", pady=6)
-        for text, var, fnt in (("K", bold_var, (FONT_UI, 11, "bold")), ("İ", italic_var, (FONT_UI, 11, "italic")),
-                               ("A", under_var, (FONT_UI, 11, "underline")), ("Ü", strike_var, (FONT_UI, 11, "overstrike"))):
-            tk.Checkbutton(toggles, text=text, variable=var, indicatoron=False, width=3, font=fnt, bg=t["panel"],
-                           fg=t["text"], selectcolor=t["accent"], activebackground=t["accent"],
-                           relief="raised", bd=1).pack(side="left", padx=2)
-        ttk.Label(left, text="K kalın · İ italik · A altı çizili · Ü üstü çizili", foreground=t["muted"]).grid(
-            row=5, column=0, columnspan=4, sticky="w")
-
-        ttk.Label(left, text="Renk").grid(row=6, column=0, sticky="w", pady=(8, 3))
-        color_row = ttk.Frame(left)
-        color_row.grid(row=6, column=1, columnspan=3, sticky="w", pady=(8, 3))
-        swatch = tk.Label(color_row, width=4, relief="solid", bd=1)
+        ttk.Label(body, text="Renk").grid(row=5, column=0, sticky="w", pady=(6, 2))
+        color_row = ttk.Frame(body)
+        color_row.grid(row=5, column=1, columnspan=3, sticky="w", pady=(6, 2))
+        swatch = tk.Label(color_row, width=3, relief="solid", bd=1)
         swatch.pack(side="left", padx=(0, 4))
 
         def set_color(rgb):
-            state["color"] = tuple(rgb)
+            te["color"] = tuple(rgb)
             swatch.config(bg="#%02x%02x%02x" % tuple(int(round(c * 255)) for c in rgb))
-            schedule()
+            self._te_schedule()
 
         def pick_color():
-            init = "#%02x%02x%02x" % tuple(int(round(c * 255)) for c in state["color"])
-            chosen = colorchooser.askcolor(color=init, parent=win, title="Yazı rengi")
+            from tkinter import colorchooser
+            init = "#%02x%02x%02x" % tuple(int(round(c * 255)) for c in te["color"])
+            chosen = colorchooser.askcolor(color=init, parent=panel, title="Yazı rengi")
             if chosen and chosen[0]:
-                set_color(tuple(v / 255.0 for v in chosen[0]))
+                set_color(tuple(c / 255.0 for c in chosen[0]))
 
-        ttk.Button(color_row, text="Seç…", command=pick_color, width=6).pack(side="left", padx=(0, 6))
+        ttk.Button(color_row, text="Seç…", command=pick_color, width=5).pack(side="left", padx=(0, 4))
         for rgb in ((0.1, 0.1, 0.1), (0.8, 0.0, 0.0), (0.0, 0.2, 0.8), (0.0, 0.5, 0.2), (1.0, 1.0, 1.0)):
             chip = tk.Label(color_row, width=2, relief="solid", bd=1, cursor="hand2",
                             bg="#%02x%02x%02x" % tuple(int(round(c * 255)) for c in rgb))
             chip.pack(side="left", padx=1)
             chip.bind("<Button-1>", lambda _e, c=rgb: set_color(c))
 
-        ttk.Label(left, text="Saydamlık").grid(row=7, column=0, sticky="w", pady=3)
-        ttk.Scale(left, from_=10, to=100, variable=opacity_var, orient="horizontal", length=140,
-                  command=lambda _v: schedule()).grid(row=7, column=1, columnspan=2, sticky="w")
-        opacity_label = ttk.Label(left, text="")
-        opacity_label.grid(row=7, column=3, sticky="w")
-
-        ttk.Label(left, text="Hizalama").grid(row=8, column=0, sticky="w", pady=3)
-        align_row = ttk.Frame(left)
-        align_row.grid(row=8, column=1, columnspan=3, sticky="w")
+        ttk.Label(body, text="Saydamlık").grid(row=6, column=0, sticky="w", pady=2)
+        ttk.Scale(body, from_=10, to=100, variable=v["opacity"], orient="horizontal", length=120,
+                  command=lambda _x: self._te_schedule()).grid(row=6, column=1, columnspan=2, sticky="w")
+        te["opacity_label"] = ttk.Label(body, text="")
+        te["opacity_label"].grid(row=6, column=3, sticky="w")
+        ttk.Label(body, text="Hizalama").grid(row=7, column=0, sticky="w", pady=2)
+        align_row = ttk.Frame(body)
+        align_row.grid(row=7, column=1, columnspan=3, sticky="w")
         for label, value in (("Sol", "left"), ("Orta", "center"), ("Sağ", "right")):
-            ttk.Radiobutton(align_row, text=label, value=value, variable=align_var).pack(side="left", padx=2)
+            ttk.Radiobutton(align_row, text=label, value=value, variable=v["align"]).pack(side="left", padx=2)
+        ttk.Label(body, text="Satır aralığı").grid(row=8, column=0, sticky="w", pady=2)
+        ttk.Spinbox(body, from_=0.8, to=3.0, increment=0.1, textvariable=v["spacing"], width=6).grid(row=8, column=1, sticky="w")
+        ttk.Label(body, text="Açı (°)").grid(row=9, column=0, sticky="w", pady=2)
+        ttk.Spinbox(body, from_=-180, to=180, increment=5, textvariable=v["angle"], width=6).grid(row=9, column=1, sticky="w")
+        ttk.Button(body, text="0°", width=3, command=lambda: v["angle"].set("0")).grid(row=9, column=2, sticky="w")
 
-        ttk.Label(left, text="Satır aralığı").grid(row=9, column=0, sticky="w", pady=3)
-        ttk.Spinbox(left, from_=0.8, to=3.0, increment=0.1, textvariable=spacing_var, width=7).grid(row=9, column=1, sticky="w")
-        ttk.Label(left, text="Açı (°)").grid(row=10, column=0, sticky="w", pady=3)
-        ttk.Spinbox(left, from_=-180, to=180, increment=5, textvariable=angle_var, width=7).grid(row=10, column=1, sticky="w")
-        ttk.Button(left, text="0°", width=4, command=lambda: angle_var.set("0")).grid(row=10, column=2, sticky="w")
+        te["pos_label"] = ttk.Label(body, text="", foreground=t["muted"])
+        te["pos_label"].grid(row=10, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Label(body, text="Yazıyı sayfada sürükleyin; sayfada başka yere tıklarsanız yazı oraya gelir. "
+                             "Ok tuşları 1 nokta, Shift ile 10 nokta kaydırır.",
+                  foreground=t["muted"], wraplength=290, justify="left").grid(row=11, column=0, columnspan=4,
+                                                                               sticky="w", pady=(2, 8))
+        buttons = ttk.Frame(body)
+        buttons.grid(row=12, column=0, columnspan=4, sticky="e")
+        ttk.Button(buttons, text="✔ Onayla ve ekle", style="Save.TButton", command=self._te_confirm).pack(side="left", padx=4)
+        ttk.Button(buttons, text="İptal", command=self._te_cancel).pack(side="left")
 
-        ttk.Label(left, text="Konum").grid(row=11, column=0, sticky="w", pady=(10, 3))
-        pad = ttk.Frame(left)
-        pad.grid(row=11, column=1, columnspan=3, sticky="w", pady=(10, 3))
-        pos_label = ttk.Label(left, text="", foreground=t["muted"])
-        pos_label.grid(row=12, column=0, columnspan=4, sticky="w")
-        ttk.Label(left, text="Yazıyı sayfada sürükleyin ya da ok tuşlarıyla kaydırın (Shift = 10 nokta).",
-                  foreground=t["muted"], wraplength=300, justify="left").grid(row=13, column=0, columnspan=4, sticky="w", pady=(4, 10))
+        panel.protocol("WM_DELETE_WINDOW", self._te_cancel)
+        panel.bind("<Escape>", lambda _e: self._te_cancel())
+        panel.bind("<Control-Return>", lambda _e: self._te_confirm())
+        for var in v.values():
+            var.trace_add("write", lambda *_a: self._te_schedule())
+        box.bind("<KeyRelease>", lambda _e: self._te_schedule())
+        box.bind("<<Paste>>", lambda _e: panel.after(20, self._te_schedule))
+        set_color(te["color"])
+        if not getattr(self, "_te_keys_bound", False):  # ok tuşları: yalnız düzenleme sürerken yutulur
+            self._te_keys_bound = True
+            for key, dx, dy in (("Left", -1, 0), ("Right", 1, 0), ("Up", 0, -1), ("Down", 0, 1)):
+                for prefix in ("", "Shift-"):
+                    self.canvas.bind(f"<{prefix}{key}>", lambda e, a=dx, b=dy: self._te_key(a, b, e), add="+")
+        # paneli pencerenin sağ üstüne koy (sayfayı örtmesin)
+        self.update_idletasks()
+        panel.update_idletasks()
+        x = self.winfo_rootx() + max(self.winfo_width() - panel.winfo_reqwidth() - 24, 0)
+        panel.geometry("+%d+%d" % (x, self.winfo_rooty() + 90))
+        box.focus_set()
+        self._te_draw()
 
-        def read_style():
-            def num(var, default, lo, hi):
-                try:
-                    return max(lo, min(hi, float(var.get().replace(",", "."))))
-                except ValueError:
-                    return default
-            return {"family": family_var.get(), "size": num(size_var, 12.0, 4.0, 300.0), "bold": bold_var.get(),
-                    "italic": italic_var.get(), "underline": under_var.get(), "strike": strike_var.get(),
-                    "color": state["color"], "opacity": max(0.1, min(1.0, opacity_var.get() / 100.0)),
-                    "align": align_var.get(), "spacing": num(spacing_var, 1.2, 0.8, 3.0),
-                    "angle": num(angle_var, 0.0, -180.0, 180.0)}
+    def _te_style(self):
+        te = self._te
+        v = te["vars"]
 
-        canvas_frame = ttk.Frame(right)
-        canvas_frame.grid(row=1, column=0, sticky="nsew")
-        canvas_frame.columnconfigure(0, weight=1)
-        canvas_frame.rowconfigure(0, weight=1)
-        cv = tk.Canvas(canvas_frame, bg=t["bg"], highlightthickness=0, cursor="fleur")
-        hbar = ttk.Scrollbar(canvas_frame, orient="horizontal", command=cv.xview)
-        vbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=cv.yview)
-        cv.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
-        cv.grid(row=0, column=0, sticky="nsew")
-        vbar.grid(row=0, column=1, sticky="ns")
-        hbar.grid(row=1, column=0, sticky="ew")
+        def num(var, default, lo, hi):
+            try:
+                return max(lo, min(hi, float(var.get().replace(",", "."))))
+            except ValueError:
+                return default
+        return {"family": v["family"].get(), "size": num(v["size"], 12.0, 4.0, 300.0), "bold": v["bold"].get(),
+                "italic": v["italic"].get(), "underline": v["underline"].get(), "strike": v["strike"].get(),
+                "color": te["color"], "opacity": max(0.1, min(1.0, v["opacity"].get() / 100.0)),
+                "align": v["align"].get(), "spacing": num(v["spacing"], 1.2, 0.8, 3.0),
+                "angle": num(v["angle"], 0.0, -180.0, 180.0)}
 
-        top = ttk.Frame(right)
-        top.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        ttk.Label(top, text="Önizleme yakınlığı").pack(side="left")
-        zoom_box = ttk.Combobox(top, textvariable=zoom_var, values=["Sığdır", "100%", "150%", "200%", "300%"],
-                                state="readonly", width=9)
-        zoom_box.pack(side="left", padx=6)
+    def _te_bbox(self):
+        te = self._te
+        text = te["box"].get("1.0", "end-1c")
+        return text_block_bbox(text if text.strip() else " ", self._te_style(), tuple(te["pos"]))
 
-        def current_bbox():
-            text = box.get("1.0", "end-1c")
-            return text_block_bbox(text if text.strip() else " ", read_style(), (pos[0], pos[1]))
+    def _te_clamp(self):
+        """Çerçeveyi sayfa sınırı içinde tutar; sınır kutusunu döndürür."""
+        te = self._te
+        prect = fitz.Rect(self.doc[te["index"]].rect)
+        bb = self._te_bbox()
+        dx = (max(0.0, prect.x0 - bb.x0) or min(0.0, prect.x1 - bb.x1)) if bb.width <= prect.width else prect.x0 - bb.x0
+        dy = (max(0.0, prect.y0 - bb.y0) or min(0.0, prect.y1 - bb.y1)) if bb.height <= prect.height else prect.y0 - bb.y0
+        te["pos"][0] += dx
+        te["pos"][1] += dy
+        return fitz.Rect(bb.x0 + dx, bb.y0 + dy, bb.x1 + dx, bb.y1 + dy)
 
-        def clamp():
-            bb = current_bbox()
-            dx = dy = 0.0
-            if bb.width <= prect.width:
-                dx = max(0.0, prect.x0 - bb.x0) or min(0.0, prect.x1 - bb.x1)
-            else:
-                dx = prect.x0 - bb.x0
-            if bb.height <= prect.height:
-                dy = max(0.0, prect.y0 - bb.y0) or min(0.0, prect.y1 - bb.y1)
-            else:
-                dy = prect.y0 - bb.y0
-            pos[0] += dx
-            pos[1] += dy
+    def _te_schedule(self):
+        te = getattr(self, "_te", None)
+        if te and te["job"] is None:
+            te["job"] = self.after(50, self._te_draw)
 
-        def draw_page():
-            cv.update_idletasks()
-            choice = zoom_var.get()
-            if choice == "Sığdır":
-                cw, ch = max(cv.winfo_width() - 4, 200), max(cv.winfo_height() - 4, 200)
-                scale = min(cw / prect.width, ch / prect.height)
-            else:
-                scale = int(choice.rstrip("%")) / 100.0 * (96.0 / 72.0)
-            state["scale"] = scale
-            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-            state["page_img"] = tk.PhotoImage(data=pix.tobytes("ppm"))
-            cv.delete("all")
-            cv.create_image(0, 0, anchor="nw", image=state["page_img"], tags="pg")
-            cv.configure(scrollregion=(0, 0, pix.width, pix.height))
-            draw_text()
+    def _te_draw(self):
+        """Yazıyı ve kesikli çerçeveyi ana sayfa görünümünün üstüne çizer (sayfa yeniden çizilince de çağrılır)."""
+        te = getattr(self, "_te", None)
+        if not te:
+            return
+        te["job"] = None
+        c = self.canvas
+        c.delete("te")
+        index = te["index"]
+        if index >= len(self.doc) or index >= len(self.page_positions) or index >= len(self.page_x):
+            return
+        page = self.doc[index]
+        text = te["box"].get("1.0", "end-1c")
+        style = self._te_style()
+        bb = self._te_clamp()
+        matrix = self._render_matrix(page, self.zoom)
+        origin = page.rect * matrix
+        px, py = self.page_x[index], self.page_positions[index][0]
 
-        def draw_text():
-            state["job"] = None
-            opacity_label.config(text="%d%%" % opacity_var.get())
-            cv.delete("tx")
-            cv.delete("fr")
-            s = state["scale"]
-            text = box.get("1.0", "end-1c")
-            st = read_style()
-            clamp()
-            bb = text_block_bbox(text if text.strip() else " ", st, (pos[0], pos[1]))
-            pos_label.config(text="Sol üst köşe: x = %.1f, y = %.1f nokta" % (pos[0], pos[1]))
-            if text.strip():
-                margin = 4.0
+        def to_canvas(rect):
+            r = fitz.Rect(rect) * matrix
+            r.normalize()
+            return px + r.x0 - origin.x0, py + r.y0 - origin.y0, px + r.x1 - origin.x0, py + r.y1 - origin.y0
+
+        te["pos_label"].config(text="Sol üst köşe: x = %.1f, y = %.1f nokta (sayfa %d)" % (te["pos"][0], te["pos"][1], index + 1))
+        te["opacity_label"].config(text="%d%%" % te["vars"]["opacity"].get())
+        margin = 4.0
+        if text.strip():
+            key = (text, tuple(sorted((k, str(val)) for k, val in style.items())), round(self.zoom, 4), index,
+                   self._page_is_rotated_for_view(page))
+            if key != te["key"]:
                 tmp = fitz.open()
                 try:
                     tpage = tmp.new_page(width=bb.width + 2 * margin, height=bb.height + 2 * margin)
-                    origin = (pos[0] - bb.x0 + margin, pos[1] - bb.y0 + margin)
-                    draw_text_block(tpage, origin, text, st)
-                    pix = tpage.get_pixmap(matrix=fitz.Matrix(s, s), alpha=True)
-                    state["text_img"] = tk.PhotoImage(data=pix.tobytes("png"))
+                    draw_text_block(tpage, (margin - (bb.x0 - te["pos"][0]), margin - (bb.y0 - te["pos"][1])), text, style)
+                    pix = tpage.get_pixmap(matrix=matrix, alpha=True)
+                    te["img"] = tk.PhotoImage(data=pix.tobytes("png"))
+                    te["key"] = key
                 finally:
                     tmp.close()
-                cv.create_image((bb.x0 - margin - prect.x0) * s, (bb.y0 - margin - prect.y0) * s, anchor="nw",
-                                image=state["text_img"], tags="tx")
-            cv.create_rectangle((bb.x0 - prect.x0) * s - 2, (bb.y0 - prect.y0) * s - 2,
-                                (bb.x1 - prect.x0) * s + 2, (bb.y1 - prect.y0) * s + 2,
-                                outline=t["accent_dark"], width=2, dash=(5, 3), tags="fr")
+            x0, y0, _x1, _y1 = to_canvas(fitz.Rect(bb.x0 - margin, bb.y0 - margin, bb.x1 + margin, bb.y1 + margin))
+            c.create_image(x0, y0, anchor="nw", image=te["img"], tags="te")
+        fx0, fy0, fx1, fy1 = to_canvas(bb)
+        c.create_rectangle(fx0 - 2, fy0 - 2, fx1 + 2, fy1 + 2, outline=self.theme["accent_dark"], width=2,
+                           dash=(5, 3), tags="te")
+        c.tag_raise("te")
 
-        def schedule(*_args):
-            if state["job"] is None:
-                state["job"] = win.after(60, draw_text)
+    def _te_move_to(self, index, point):
+        te = self._te
+        te["index"] = index
+        bb = self._te_bbox()
+        te["pos"][0] = point.x - bb.width / 2 + (te["pos"][0] - bb.x0)
+        te["pos"][1] = point.y - bb.height / 2 + (te["pos"][1] - bb.y0)
+        self._te_draw()
 
-        def center_on_frame():
-            bb = current_bbox()
-            s = state["scale"]
-            region = cv.cget("scrollregion").split()
-            if len(region) != 4:
-                return
-            total_w, total_h = float(region[2]), float(region[3])
-            cx, cy = ((bb.x0 + bb.x1) / 2 - prect.x0) * s, ((bb.y0 + bb.y1) / 2 - prect.y0) * s
-            cv.xview_moveto(max(0.0, (cx - cv.winfo_width() / 2) / total_w))
-            cv.yview_moveto(max(0.0, (cy - cv.winfo_height() / 2) / total_h))
+    def _te_press(self, cx, cy):
+        """Düzenleme sürerken tuval tıklaması: çerçevenin içindeyse sürükleme başlar, dışındaysa çerçeve oraya gelir."""
+        te = self._te
+        index, point = self._view_to_page(cx, cy)
+        if index is None:
+            return
+        if index != te["index"] or not self._te_bbox().contains(point):
+            self._te_move_to(index, point)
+        te["drag"] = (self._view_to_page(cx, cy, index=te["index"])[1], list(te["pos"]))
 
-        def on_zoom(_e=None):
-            draw_page()
-            center_on_frame()
+    def _te_motion(self, cx, cy):
+        te = self._te
+        start, pos0 = te["drag"]
+        now = self._view_to_page(cx, cy, index=te["index"])[1]
+        te["pos"][0] = pos0[0] + now.x - start.x
+        te["pos"][1] = pos0[1] + now.y - start.y
+        self._te_draw()
 
-        zoom_box.bind("<<ComboboxSelected>>", on_zoom)
+    def _te_key(self, dx, dy, event):
+        if not getattr(self, "_te", None):
+            return None
+        step = 10.0 if event.state & 1 else 1.0
+        self._te["pos"][0] += dx * step
+        self._te["pos"][1] += dy * step
+        self._te_draw()
+        return "break"
 
-        def press(event):
-            cv.focus_set()
-            cx, cy = cv.canvasx(event.x), cv.canvasy(event.y)
-            s = state["scale"]
-            bb = current_bbox()
-            px, py = cx / s + prect.x0, cy / s + prect.y0
-            if not (bb.x0 <= px <= bb.x1 and bb.y0 <= py <= bb.y1):  # çerçevenin dışına tıklandı: çerçeveyi oraya getir
-                pos[0] += px - (bb.x0 + bb.x1) / 2
-                pos[1] += py - (bb.y0 + bb.y1) / 2
-                draw_text()
-            state["drag"] = (cx, cy, pos[0], pos[1])
+    def _te_close(self):
+        te, self._te = getattr(self, "_te", None), None
+        if te:
+            if te["job"] is not None:
+                try:
+                    self.after_cancel(te["job"])
+                except (ValueError, tk.TclError):
+                    pass
+            self.canvas.delete("te")
+            try:
+                te["panel"].destroy()
+            except tk.TclError:
+                pass
 
-        def motion(event):
-            if not state["drag"]:
-                return
-            cx, cy = cv.canvasx(event.x), cv.canvasy(event.y)
-            sx, sy, px, py = state["drag"]
-            s = state["scale"]
-            pos[0], pos[1] = px + (cx - sx) / s, py + (cy - sy) / s
-            draw_text()
+    def _te_cancel(self):
+        self._te_close()
 
-        def release(_event):
-            state["drag"] = None
-
-        cv.bind("<ButtonPress-1>", press)
-        cv.bind("<B1-Motion>", motion)
-        cv.bind("<ButtonRelease-1>", release)
-        cv.bind("<MouseWheel>", lambda e: cv.yview_scroll(-1 if e.delta > 0 else 1, "units"))
-        cv.bind("<Shift-MouseWheel>", lambda e: cv.xview_scroll(-1 if e.delta > 0 else 1, "units"))
-
-        def nudge(dx, dy, event=None):
-            step = 10.0 if (event is not None and event.state & 1) else 1.0
-            pos[0] += dx * step
-            pos[1] += dy * step
-            draw_text()
-            return "break"
-
-        for key, dx, dy in (("Left", -1, 0), ("Right", 1, 0), ("Up", 0, -1), ("Down", 0, 1)):
-            cv.bind(f"<{key}>", lambda e, a=dx, b=dy: nudge(a, b, e))
-            cv.bind(f"<Shift-{key}>", lambda e, a=dx, b=dy: nudge(a, b, e))
-        for col, (label, dx, dy) in enumerate((("◀", -1, 0), ("▲", 0, -1), ("▼", 0, 1), ("▶", 1, 0))):
-            ttk.Button(pad, text=label, width=3, command=lambda a=dx, b=dy: nudge(a, b)).grid(row=0, column=col, padx=1)
-
-        def confirm(_event=None):
-            text = box.get("1.0", "end-1c").rstrip()
-            if not text.strip():
-                messagebox.showwarning("Yazı ekle", "Önce eklenecek yazıyı girin.", parent=win)
-                return
-            clamp()
-            state["result"] = {"text": text, "style": read_style(), "pos": (pos[0], pos[1])}
-            self._text_style = dict(state["result"]["style"])
-            win.destroy()
-
-        buttons = ttk.Frame(left)
-        buttons.grid(row=14, column=0, columnspan=4, sticky="se")
-        ttk.Button(buttons, text="✔ Onayla ve ekle", style="Save.TButton", command=confirm).pack(side="left", padx=4)
-        ttk.Button(buttons, text="İptal", command=win.destroy).pack(side="left")
-        win.bind("<Escape>", lambda _e: win.destroy())
-        win.bind("<Control-Return>", confirm)
-
-        for var in (family_var, size_var, bold_var, italic_var, under_var, strike_var, align_var, spacing_var, angle_var):
-            var.trace_add("write", schedule)
-        box.bind("<KeyRelease>", schedule)
-        box.bind("<<Paste>>", lambda _e: win.after(20, schedule))
-        cv.bind("<Configure>", lambda _e: (draw_page() if zoom_var.get() == "Sığdır" and state["job"] is None
-                                           and abs(state["scale"] - min(max(cv.winfo_width() - 4, 200) / prect.width,
-                                                                        max(cv.winfo_height() - 4, 200) / prect.height)) > 0.02
-                                           else None))
-        set_color(state["color"])
-        win.update_idletasks()
-        draw_page()
-        box.focus_set()
-        win.grab_set()
-        self.wait_window(win)
-        return state["result"]
+    def _te_confirm(self):
+        te = self._te
+        if not te:
+            return
+        text = te["box"].get("1.0", "end-1c").rstrip()
+        if not text.strip():
+            messagebox.showwarning("Yazı ekle", "Önce eklenecek yazıyı girin.", parent=te["panel"])
+            return
+        if te["index"] >= len(self.doc):
+            self._te_close()
+            return
+        self._te_clamp()
+        style, pos, index = self._te_style(), tuple(te["pos"]), te["index"]
+        self._text_style = dict(style)
+        self._te_close()
+        page = self.doc[index]
+        self._record_edit()
+        draw_text_block(page, fitz.Point(pos), text, style)
+        self.render_all_pages()
+        self._toast("Yazı eklendi (Ctrl+Z ile geri alınır)")
 
     def _tool_gorsel(self, index, point):
         path = filedialog.askopenfilename(title="İmza veya görsel seçin",
@@ -4621,6 +4602,8 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
     # Sayfa çizimi (yalnızca görünen sayfalar çizilir)
     # ------------------------------------------------------------------
     def render_all_pages(self):
+        if self._te and self._te["index"] >= len(self.doc):
+            self._te_close()
         self._link_cache.clear()
         self.canvas.delete("all")
         self.page_images.clear()
@@ -4689,6 +4672,8 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             self.canvas.create_image(x, y, anchor="nw", image=img, tags=f"page_{i}")
             self._draw_hits(i, page, matrix, x, y)
             self._draw_widget_hits(i, page, matrix, x, y)
+        if self._te:
+            self._te_draw()
 
     def _draw_hits(self, index, page, matrix, x, y):
         """Arama eşleşmelerini belgeyi değiştirmeden canvas üzerinde işaretler."""

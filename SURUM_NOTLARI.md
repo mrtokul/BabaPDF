@@ -7,6 +7,10 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.10.1 — 28.10.2026
+Değişen
+- Yazı ekleme artık doğrudan açık sayfada yapılır: yazı sayfa üzerinde çerçeve içinde görünür, sayfada sürüklenir (boş yere tıklayınca oraya gelir; ok tuşları 1 nokta, Shift ile 10 nokta). Ayrı büyük önizleme penceresi kaldırıldı; yalnızca küçük bir «Yazı biçimi» paneli açılır (biçim ayarları, «Onayla ve ekle» / İptal). Yakınlaştırma ve kaydırma düzenleme sürerken de çalışır; başka araca geçilirse düzenleme iptal edilir.
+
 ## 1.10.0 — 28.10.2026
 Yeni
 - Yazı aracı artık önizlemeli: yazı tipi, boyut, kalın, italik, altı çizili, üstü çizili, renk, saydamlık, hizalama, satır aralığı ve açı seçilir; yazı sayfa önizlemesinde çerçeve içinde görünür, sürüklenerek ya da ok tuşlarıyla (Shift = 10 nokta) istenen yere kaydırılır; yazı yalnız «Onayla ve ekle» ile sayfaya işlenir (İptal sayfaya dokunmaz). Eklenen yazı seçilebilir/aranabilir gerçek yazıdır; Ctrl+Z ile geri alınır.
