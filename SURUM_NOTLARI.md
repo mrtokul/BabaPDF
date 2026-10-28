@@ -7,6 +7,10 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.11.1 — 28.10.2026
+Değişen
+- Paket küçültüldü: programın kullanmadığı cv2 (OpenCV), onnxruntime, numpy, pandas, matplotlib, scipy, networkx ve pymupdf4llm/pymupdf-layout `pdf_gui.spec` içinde dışarıda bırakıldı (pymupdf 2.0 bağımlılıkları olarak pakete giriyordu; ~200 MB). Tek dosya EXE'nin açıkça daha hızlı açılması beklenir; yeni «Son açılış süresi» Hakkında penceresinde görünür. İlk derlemede OCR, Word/Excel/PPT dışa aktarma, şifreli PDF açma ve yazı ekleme elle denenmelidir.
+
 ## 1.11.0 — 28.10.2026
 Kaldırılan
 - Dijital imza işlevlerinin tümü kaldırıldı: «PDF'yi Dijital Olarak İmzala», «Dijital İmzaları Doğrula», «İmza Raporunu TXT Olarak Kaydet», «Sertifikayı Kontrol Et» ve açılış sayfasındaki «Dijital İmza» kartı. «Güvenlik ve İmza» menüsü «Güvenlik» oldu. Resim yerleştirme (imza resmi dahil) durur.

@@ -39,7 +39,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # pymupdf 2.0 bagimliliklari (pymupdf-layout, pymupdf4llm: numpy, onnxruntime, OpenCV...) program tarafindan
+    # kullanilmaz ama collect_all("pymupdf") ile pakete girip tek dosya EXE'yi ~200 MB sisiriyordu.
+    excludes=["cv2", "onnxruntime", "numpy", "pandas", "matplotlib", "scipy", "networkx",
+              "pymupdf4llm", "pymupdf_layout", "pymupdf.layout"],
     noarchive=False,
     optimize=0,
 )
