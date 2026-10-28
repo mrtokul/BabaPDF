@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.11.1"
+APP_VERSION = "1.12.0"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -659,6 +659,461 @@ def hash_stable(text):
 
 
 
+
+
+# --- Office dışa aktarma yardımcıları (Word / Excel / PowerPoint) --------------------------------------
+_OF_FONTS = (("arial", "Arial"), ("helvetica", "Arial"), ("liberationsans", "Arial"), ("times", "Times New Roman"),
+             ("liberationserif", "Times New Roman"), ("courier", "Courier New"), ("liberationmono", "Courier New"),
+             ("calibri", "Calibri"), ("carlito", "Calibri"), ("cambria", "Cambria"), ("caladea", "Cambria"),
+             ("segoeui", "Segoe UI"), ("tahoma", "Tahoma"), ("verdana", "Verdana"), ("georgia", "Georgia"),
+             ("trebuchet", "Trebuchet MS"), ("consolas", "Consolas"), ("garamond", "Garamond"),
+             ("palatino", "Palatino Linotype"), ("bookantiqua", "Book Antiqua"), ("comicsans", "Comic Sans MS"),
+             ("dejavusans", "DejaVu Sans"), ("dejavuserif", "DejaVu Serif"), ("opensans", "Open Sans"),
+             ("roboto", "Roboto"), ("lato", "Lato"), ("montserrat", "Montserrat"))
+_OF_LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"}
+_OF_BULLET = re.compile(r"^\s*([•▪◦●○■□‣⁃·\-–—*]|\d{1,3}[.)]|[a-zA-Z][.)])\s+")
+
+
+def office_font_name(raw):
+    """PDF'teki (alt kümeli) yazı tipi adını Office'te bulunan bir ada çevirir."""
+    base = re.sub(r"^[A-Z]{6}\+", "", raw or "").strip()
+    key = re.sub(r"[^a-z]", "", base.lower().split(",")[0].split("-")[0])
+    if "symbol" in key or "dingbats" in key or "wingding" in key:
+        return "Arial"  # madde imi yazı tipleri Office'te yok: imi "•" yapıldı
+    for prefix, name in _OF_FONTS:
+        if key.startswith(prefix):
+            return name
+    name = base.split(",")[0].split("-")[0]
+    name = re.sub(r"(PSMT|MT|PS)$", "", name)
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name).strip()
+    return name or "Arial"
+
+
+def _of_text(value):
+    text = PDFProcessor._clean_text(value)
+    for lig, plain in _OF_LIGATURES.items():
+        text = text.replace(lig, plain)
+    for pua in ("\uf0b7", "\uf0a7", "\uf0d8", "\uf0fc", "\uf076", "\uf02d"):
+        text = text.replace(pua, "•")
+    return text.replace("­", "")
+
+
+def _of_hex(color):
+    return "%02X%02X%02X" % ((color >> 16) & 255, (color >> 8) & 255, color & 255)
+
+
+def _of_marks(page):
+    """Sayfadaki ince yatay çizgiler (altı/üstü çizgi) ve dolgulu dikdörtgenler (hücre/zemin rengi)."""
+    hlines, fills = [], []
+    try:
+        drawings = page.get_drawings()
+    except Exception:  # noqa: BLE001
+        return hlines, fills
+    for d in drawings:
+        for item in d.get("items", ()):
+            if item[0] == "l":
+                p1, p2 = item[1], item[2]
+                if abs(p1.y - p2.y) < 1.2 and abs(p2.x - p1.x) > 3:
+                    hlines.append((min(p1.x, p2.x), max(p1.x, p2.x), (p1.y + p2.y) / 2))
+            elif item[0] == "re":
+                r = item[1]
+                if r.height < 1.6 and r.width > 3:
+                    hlines.append((r.x0, r.x1, (r.y0 + r.y1) / 2))
+        fill = d.get("fill")
+        if fill and d.get("rect") is not None and d["rect"].width > 4 and d["rect"].height > 4:
+            rgb = tuple(int(round(c * 255)) for c in fill[:3])
+            if rgb != (255, 255, 255):
+                fills.append((fitz.Rect(d["rect"]), rgb))
+    return hlines, fills
+
+
+def _of_span(span, hlines):
+    """PDF span'ından Office biçim sözlüğü: yazı tipi, boyut, kalın, italik, renk, altı/üstü çizili, üst simge."""
+    name = span.get("font", "")
+    low = name.lower()
+    size = float(span.get("size", 11))
+    flags = span.get("flags", 0)
+    x0, _y0, x1, _y1 = span["bbox"]
+    base = span.get("origin", (x0, span["bbox"][3]))[1]
+    width = max(x1 - x0, 1.0)
+    underline = strike = False
+    for lx0, lx1, ly in hlines:
+        if lx0 >= x0 - 4 and lx1 <= x1 + 4 and (lx1 - lx0) >= 0.8 * width:
+            if base + 0.4 <= ly <= base + 0.28 * size + 1.5:
+                underline = True
+            elif base - 0.5 * size - 1.5 <= ly <= base - 0.2 * size + 1.5:
+                strike = True
+    return {"font": office_font_name(name), "size": size, "bold": bool(flags & 16) or "bold" in low or "black" in low,
+            "italic": bool(flags & 2) or "italic" in low or "oblique" in low, "color": span.get("color", 0),
+            "underline": underline, "strike": strike, "sup": bool(flags & 1)}
+
+
+def _of_xy_cut(items):
+    """Okuma sırası: özyinelemeli XY-kesimi (önce yatay boşluklar, sonra dikey boşluklar = sütunlar)."""
+    if len(items) <= 1:
+        return list(items)
+
+    def split(axis, gap):
+        order = sorted(items, key=lambda it: it["bbox"][axis])
+        groups, end = [[order[0]]], order[0]["bbox"][axis + 2]
+        for it in order[1:]:
+            if it["bbox"][axis] >= end + gap:
+                groups.append([it])
+                end = it["bbox"][axis + 2]
+            else:
+                groups[-1].append(it)
+                end = max(end, it["bbox"][axis + 2])
+        return groups
+
+    groups = split(1, 0.0)
+    if len(groups) == 1:
+        groups = split(0, 8.0)
+    if len(groups) > 1:
+        return [x for g in groups for x in _of_xy_cut(g)]
+    return sorted(items, key=lambda it: (it["bbox"][1], it["bbox"][0]))
+
+
+def _of_align(bbox, left, right, nlines=2, justified_hint=False):
+    """Bir bloğun hizası: left / center / right / justify (kapsayıcının sol-sağ sınırlarına göre)."""
+    x0, x1 = bbox[0], bbox[2]
+    width = max(right - left, 1.0)
+    if justified_hint and (x1 - x0) > 0.6 * width and abs(x0 - left) < 6 and abs(right - x1) < 6:
+        return "justify"
+    lo, ro = x0 - left, right - x1
+    if lo > 6 and ro > 6 and abs(lo - ro) < max(4.0, 0.02 * width):
+        return "center"
+    if ro < 8 and lo > max(0.25 * width, ro + 6):
+        return "right"
+    return "left"
+
+
+def _of_block_infos(block, hlines):
+    """Bloğu bilgi sözlüklerine çevirir: aynı satırdaki parçalar (madde imi + metin) birleştirilir,
+    madde imiyle başlayan her satır ayrı paragraf olur."""
+    rows = []
+    for line in sorted(block.get("lines", ()), key=lambda ln: (ln["bbox"][1], ln["bbox"][0])):
+        if not any(sp.get("text", "").strip() for sp in line.get("spans", ())):
+            continue
+        for row in rows:
+            top, bottom = max(row["bbox"][1], line["bbox"][1]), min(row["bbox"][3], line["bbox"][3])
+            if bottom - top > 0.6 * min(row["bbox"][3] - row["bbox"][1], line["bbox"][3] - line["bbox"][1]):
+                first, second = (row, line) if row["bbox"][0] <= line["bbox"][0] else (line, row)
+                gap = second["bbox"][0] - first["bbox"][2]
+                spans = list(first["spans"])
+                if gap > 1.0 and spans and not spans[-1]["text"].endswith(" "):
+                    spans.append(dict(spans[-1], text=" "))
+                spans += list(second["spans"])
+                row["spans"] = spans
+                row["bbox"] = (first["bbox"][0], min(row["bbox"][1], line["bbox"][1]),
+                               max(row["bbox"][2], line["bbox"][2]), max(row["bbox"][3], line["bbox"][3]))
+                break
+        else:
+            rows.append({"bbox": tuple(line["bbox"]), "spans": list(line["spans"])})
+    groups = []
+    for row in rows:
+        text = _of_text("".join(sp["text"] for sp in row["spans"]))
+        if groups and not _OF_BULLET.match(text):
+            groups[-1].append(row)
+        else:
+            groups.append([row])
+    result = []
+    for group in groups:
+        bbox = (min(r["bbox"][0] for r in group), min(r["bbox"][1] for r in group),
+                max(r["bbox"][2] for r in group), max(r["bbox"][3] for r in group))
+        info = _of_block_info1({"lines": group, "bbox": bbox}, hlines)
+        if info:
+            result.append(info)
+    return result
+
+
+def _of_block_info1(block, hlines):
+    """Blok -> satırlar (span biçimleriyle), birleştirme kararları, satır aralığı ve genişlik bilgisi."""
+    lines = []
+    for line in block.get("lines", ()):
+        spans = [(_of_text(sp["text"]), _of_span(sp, hlines)) for sp in line.get("spans", ()) if sp.get("text")]
+        if not any(t.strip() for t, _s in spans):
+            continue
+        lines.append({"bbox": line["bbox"], "spans": spans})
+    if not lines:
+        return None
+    pitch = None
+    if len(lines) > 1:
+        gaps = [lines[i + 1]["bbox"][1] - lines[i]["bbox"][1] for i in range(len(lines) - 1)]
+        gaps = [g for g in gaps if g > 1]
+        if gaps:
+            pitch = sorted(gaps)[len(gaps) // 2]
+    sizes = [s["size"] for ln in lines for _t, s in ln["spans"]]
+    size = max(sizes) if sizes else 11.0
+    if pitch is None:
+        pitch = max(lines[0]["bbox"][3] - lines[0]["bbox"][1], size * 1.15)
+    widths = [ln["bbox"][2] - ln["bbox"][0] for ln in lines]
+    longest = max(widths)
+    justified = len(lines) >= 3 and sum(abs(ln["bbox"][2] - block["bbox"][2]) < 2.0 for ln in lines[:-1]) >= 0.7 * (len(lines) - 1)
+    return {"lines": lines, "pitch": pitch, "size": size, "longest": longest, "justified": justified,
+            "bbox": tuple(block["bbox"])}
+
+
+def _of_join(info):
+    """Satırları paragraf metnine çevirir: (metin, biçim) parçaları + satır sonu kararları (None = satır sonu ekle)."""
+    parts = []
+    lines = info["lines"]
+    for i, ln in enumerate(lines):
+        spans = list(ln["spans"])
+        last = i == len(lines) - 1
+        if not last and spans:
+            text, st = spans[-1]
+            nxt = lines[i + 1]["spans"][0][0] if lines[i + 1]["spans"] else ""
+            width = ln["bbox"][2] - ln["bbox"][0]
+            if text.rstrip().endswith("-") and nxt[:1].islower() and len(text.rstrip()) > 2 and text.rstrip()[-2].isalpha():
+                spans[-1] = (text.rstrip()[:-1], st)  # satır sonu tire: kelimeyi birleştir
+                glue = ""
+            elif width < 0.8 * info["longest"] or len(lines) == 1:
+                glue = None  # kısa satır: gerçek satır sonu
+            else:
+                glue = " "
+            parts.extend(spans)
+            if glue is None:
+                parts.append((None, None))
+            elif glue:
+                parts.append((glue, spans[-1][1]))
+        else:
+            parts.extend(spans)
+    return parts
+
+
+def _of_cluster_images(doc, page, tables_bbox, min_area=1500.0):
+    """Vektör çizim kümelerini (grafik, şekil, ayraç) resim olarak alır; tablo ve ince çizgiler hariç."""
+    out = []
+    try:
+        clusters = page.cluster_drawings()
+    except Exception:  # noqa: BLE001
+        return out
+    page_area = page.rect.width * page.rect.height
+    for rect in clusters:
+        rect = fitz.Rect(rect) & page.rect
+        if rect.is_empty or rect.width < 12 or rect.height < 12 or rect.width * rect.height < min_area:
+            continue
+        if rect.width * rect.height > 0.8 * page_area:
+            continue  # tüm sayfa zemini
+        if any((rect & tb).get_area() > 0.5 * rect.get_area() for tb in tables_bbox):
+            continue
+        pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), clip=rect, alpha=False)
+        out.append((rect, pix.tobytes("png")))
+    return out
+
+
+def _of_page_items(doc, page, with_tables=True):
+    """Sayfanın öğeleri okuma sırasıyla: metin blokları, tablolar, resimler, çizim kümeleri; ayrıca kenar boşlukları."""
+    hlines, fills = _of_marks(page)
+    tables = []
+    if with_tables:
+        try:
+            tables = [t for t in page.find_tables().tables if t.row_count >= 1 and t.col_count >= 2 and len(t.cells) >= 2]
+        except Exception:  # noqa: BLE001
+            tables = []
+    tbboxes = [fitz.Rect(t.bbox) for t in tables]
+    clusters = _of_cluster_images(doc, page, tbboxes)
+    cboxes = [r for r, _d in clusters]
+    items = []
+    flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
+    for block in page.get_text("dict", flags=flags)["blocks"]:
+        if block.get("type") != 0:
+            continue
+        center = fitz.Point((block["bbox"][0] + block["bbox"][2]) / 2, (block["bbox"][1] + block["bbox"][3]) / 2)
+        if any(center in tb for tb in tbboxes) or any(center in cb for cb in cboxes):
+            continue  # tablonun / şeklin içindeki yazı o öğeyle birlikte gider
+        for info in _of_block_infos(block, hlines):
+            items.append({"kind": "text", "bbox": fitz.Rect(info["bbox"]), "info": info})
+    try:
+        drawn = [fitz.Rect(d["rect"]) for d in page.get_drawings()]
+    except Exception:  # noqa: BLE001
+        drawn = []
+    for table in tables:
+        tb = fitz.Rect(table.bbox)
+        ruled = any(d.x1 >= tb.x0 - 2 and d.x0 <= tb.x1 + 2 and d.y1 >= tb.y0 - 2 and d.y0 <= tb.y1 + 2 for d in drawn)
+        items.append({"kind": "table", "bbox": tb, "table": table, "ruled": ruled})
+    page_area = page.rect.width * page.rect.height
+    for bbox, data in PDFProcessor._page_images(doc, page):
+        if bbox.width * bbox.height > 0.85 * page_area:
+            continue  # sayfa zemini resmi
+        if any((bbox & cb).get_area() > 0.5 * bbox.get_area() for cb in cboxes):
+            continue
+        items.append({"kind": "image", "bbox": fitz.Rect(bbox), "data": data})
+    for rect, data in clusters:
+        items.append({"kind": "image", "bbox": rect, "data": data})
+    items = _of_xy_cut(items)
+    if items:
+        left = max(14.0, min(it["bbox"].x0 for it in items))
+        right = max(14.0, page.rect.width - max(it["bbox"].x1 for it in items))
+        top = max(14.0, min(it["bbox"].y0 for it in items))
+        bottom = max(14.0, page.rect.height - max(it["bbox"].y1 for it in items))
+    else:
+        left = right = top = bottom = 36.0
+    margins = tuple(min(v, 0.45 * d) for v, d in zip((left, right, top, bottom),
+                                                      (page.rect.width, page.rect.width, page.rect.height, page.rect.height)))
+    return items, margins, hlines, fills
+
+
+def _of_grid(table, tol=1.5):
+    """Tablo hücrelerinden satır/sütun sınırlarını ve birleşik hücre aralıklarını çıkarır."""
+    def edges(values):
+        out = []
+        for v in sorted(values):
+            if not out or v - out[-1] > tol:
+                out.append(v)
+        return out
+    cells = [fitz.Rect(c) for c in table.cells if c]
+    xs = edges([c.x0 for c in cells] + [c.x1 for c in cells])
+    ys = edges([c.y0 for c in cells] + [c.y1 for c in cells])
+
+    def idx(seq, v):
+        return min(range(len(seq)), key=lambda i: abs(seq[i] - v))
+    spans = []
+    for c in cells:
+        c0, c1 = idx(xs, c.x0), idx(xs, c.x1)
+        r0, r1 = idx(ys, c.y0), idx(ys, c.y1)
+        if c1 > c0 and r1 > r0:
+            spans.append((r0, c0, r1 - 1, c1 - 1, c))
+    return xs, ys, spans
+
+
+def _of_cell_fill(rect, fills):
+    best = None
+    for frect, rgb in fills:
+        if (frect & rect).get_area() >= 0.7 * rect.get_area() and frect.get_area() <= 1.6 * rect.get_area() + 50:
+            best = rgb
+    return best
+
+
+def _of_cell_blocks(page, rect, hlines):
+    """Hücrenin içindeki yazı blokları (bilgi sözlükleri)."""
+    flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
+    out = []
+    for block in page.get_text("dict", clip=rect, flags=flags)["blocks"]:
+        if block.get("type") == 0:
+            out.extend(_of_block_infos(block, hlines))
+    return out
+
+
+def _of_number(text):
+    """Metin sayıya benziyorsa (Türkçe biçim öncelikli) (değer, sayı_biçimi) döndürür; değilse None."""
+    s = text.strip().replace(" ", "").replace(" ", "")
+    if not s or len(s) > 24:
+        return None
+    pct = False
+    if s.startswith("%") and len(s) > 1:
+        s, pct = s[1:], True
+    elif s.endswith("%") and len(s) > 1:
+        s, pct = s[:-1], True
+    patterns = ((r"^[-+]?\d{1,3}(,\d{3})+\.\d+$", lambda v: v.replace(",", "")),
+                (r"^[-+]?\d{1,3}(\.\d{3})+(,\d+)?$", lambda v: v.replace(".", "").replace(",", ".")),
+                (r"^[-+]?\d+,\d+$", lambda v: v.replace(",", ".")),
+                (r"^[-+]?\d+\.\d+$", lambda v: v),
+                (r"^[-+]?\d+$", lambda v: v))
+    for pattern, conv in patterns:
+        if re.match(pattern, s):
+            if re.match(r"^[-+]?0\d", s) or len(re.sub(r"\D", "", s)) > 15:
+                return None  # 0532… gibi kimlik/telefon dizileri metin kalır
+            try:
+                value = float(conv(s))
+            except ValueError:
+                return None
+            decimals = len(re.split(r"[.,]", s)[-1]) if re.search(r"[.,]\d{1,2}$", s) else 0
+            grouped = bool(re.search(r"\d[.,]\d{3}(?!\d)", s)) and not re.match(r"^[-+]?\d+\.\d{1,2}$", s)
+            if pct:
+                return value / 100.0, "0.00%" if decimals else "0%"
+            fmt = ("#,##0." + "0" * decimals) if decimals else ("#,##0" if grouped else "General")
+            if value == int(value) and not decimals:
+                value = int(value)
+            return value, fmt
+    return None
+
+
+def _of_columns(items, left, right):
+    """Yan yana duran metin sütunlarını (gazete/makale düzeni) tek 'cols' öğesinde toplar; öğe sırası korunur."""
+    width = max(right - left, 1.0)
+    texts = [it for it in items if it["kind"] == "text" and it["bbox"].width < 0.62 * width]
+    groups = []
+    for it in sorted(texts, key=lambda i: i["bbox"].x0):
+        for g in groups:
+            if abs(g[0]["bbox"].x0 - it["bbox"].x0) < 8:
+                g.append(it)
+                break
+        else:
+            groups.append([it])
+    runs = []  # her sütun adayını dikey boşluklara göre parçalara ayır; yeterince yüksek parçalar aday
+    for g in groups:
+        g = sorted(g, key=lambda i: i["bbox"].y0)
+        run = [g[0]]
+        for it in g[1:]:
+            if it["bbox"].y0 - run[-1]["bbox"].y1 > 28:
+                runs.append(run)
+                run = []
+            run.append(it)
+        runs.append(run)
+    runs = [r for r in runs if r[-1]["bbox"].y1 - r[0]["bbox"].y0 > 60]
+    cols = None
+    for r in runs:
+        y0, y1 = r[0]["bbox"].y0, r[-1]["bbox"].y1
+        mates = [r]
+        for o in runs:
+            if o is r or abs(o[0]["bbox"].x0 - r[0]["bbox"].x0) < 20:
+                continue
+            oy0, oy1 = o[0]["bbox"].y0, o[-1]["bbox"].y1
+            if min(y1, oy1) - max(y0, oy0) > 0.5 * min(y1 - y0, oy1 - oy0) and all(
+                    abs(m[0]["bbox"].x0 - o[0]["bbox"].x0) >= 20 for m in mates):
+                mates.append(o)
+        if len(mates) >= 2:
+            cols = mates
+            break
+    if not cols:
+        return items
+    extent = [(min(i["bbox"].y0 for i in g), max(i["bbox"].y1 for i in g)) for g in cols]
+    cols.sort(key=lambda g: g[0]["bbox"].x0)
+    for a, b in zip(cols, cols[1:]):
+        if max(i["bbox"].x1 for i in a) > b[0]["bbox"].x0 + 2:
+            return items  # sütunlar karışıyor
+    members = {id(i) for g in cols for i in g}
+    ymin = min(e[0] for e in extent)
+    ymax = max(e[1] for e in extent)
+    out, placed = [], False
+    for it in items:
+        if id(it) in members:
+            if not placed:
+                xs = [g[0]["bbox"].x0 for g in cols]
+                rights = [max(i["bbox"].x1 for i in g) for g in cols]
+                out.append({"kind": "cols", "bbox": fitz.Rect(xs[0], ymin, rights[-1], ymax), "cols": cols})
+                placed = True
+            continue
+        out.append(it)
+    return out
+
+
+def _of_col_aligns(page, spans, hlines):
+    """Tablo sütunlarının ortak hizası: sütundaki yazıların sağ (veya orta) kenarları çakışıyorsa o hiza."""
+    cols = {}
+    for r0, c0, r1, c1, rect in spans:
+        if c1 > c0:
+            continue
+        blocks = _of_cell_blocks(page, fitz.Rect(rect.x0 + 0.5, rect.y0 + 0.5, rect.x1 - 0.5, rect.y1 - 0.5), hlines)
+        if blocks:
+            cols.setdefault(c0, []).append((min(b["bbox"][0] for b in blocks), max(b["bbox"][2] for b in blocks)))
+    result = {}
+    for c, lst in cols.items():
+        if len(lst) < 2:
+            continue
+        x0s, x1s = [a for a, _b in lst], [b for _a, b in lst]
+        spread0, spread1 = max(x0s) - min(x0s), max(x1s) - min(x1s)
+        mids = [(a + b) / 2 for a, b in lst]
+        if spread1 < 2.5 and spread0 > 3:
+            result[c] = "right"
+        elif max(mids) - min(mids) < 2.5 and spread0 > 3:
+            result[c] = "center"
+        elif spread0 < 2.5:
+            result[c] = "left"
+    return result
+
+
 class PDFProcessor:
     def __init__(self, pdf_path):
         self.pdf_path = pdf_path
@@ -867,86 +1322,356 @@ class PDFProcessor:
 
     @staticmethod
     def export_docx(pdf_path, output_path, editable=True, progress=None):
-        """Word (.docx): editable=True metni (kalın/italik/punto korunarak) ve resimleri aktarır; metinsiz (taranmış)
-        sayfalar ve editable=False durumunda sayfa resim olarak konur. Sayfa sonları korunur."""
+        """Word (.docx): editable=True sayfa düzenini korur: sayfa boyutu ve kenar boşlukları, yazı tipi/boyut/renk,
+        kalın-italik-altı çizili, hizalama ve girinti, satır aralığı, gerçek tablolar (birleşik hücre ve zemin rengi
+        dahil), resimler ve vektör şekiller (resim olarak) yerinde, sütunlu sayfalarda okuma sırası. Metinsiz
+        (taranmış) sayfalar ve editable=False durumunda sayfa resim olarak konur."""
         import io
+        from collections import Counter
         from docx import Document
-        from docx.shared import Pt, Inches
+        from docx.enum.section import WD_SECTION
+        from docx.enum.table import WD_ROW_HEIGHT_RULE
+        from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Pt, RGBColor
+
         out = Document()
+        alignments = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER,
+                      "right": WD_ALIGN_PARAGRAPH.RIGHT, "justify": WD_ALIGN_PARAGRAPH.JUSTIFY}
+
+        def style_run(run, st):
+            run.font.name = st["font"]
+            rpr = run._element.get_or_add_rPr()
+            fonts = rpr.find(qn("w:rFonts"))
+            if fonts is not None:
+                fonts.set(qn("w:eastAsia"), st["font"])
+                fonts.set(qn("w:cs"), st["font"])
+            run.font.size = Pt(max(1, min(round(st["size"] * 2) / 2, 400)))
+            run.bold = st["bold"] or None
+            run.italic = st["italic"] or None
+            if st["underline"]:
+                run.underline = True
+            if st["strike"]:
+                run.font.strike = True
+            if st["sup"]:
+                run.font.superscript = True
+            if st["color"] & 0xFFFFFF:
+                run.font.color.rgb = RGBColor((st["color"] >> 16) & 255, (st["color"] >> 8) & 255, st["color"] & 255)
+
+        def fill_par(par, info):
+            run = None
+            for text, st in _of_join(info):
+                if text is None:
+                    (run or par.add_run()).add_break()
+                    continue
+                if not text:
+                    continue
+                run = par.add_run(text)
+                style_run(run, st)
+
+        def set_spacing(par, info, before):
+            pf = par.paragraph_format
+            pf.space_before = Pt(max(0.0, min(before, 600.0)))
+            pf.space_after = Pt(0)
+            pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            pf.line_spacing = Pt(max(info["pitch"], info["size"] * 1.05))
+
+        def add_text(container, info, left, right, cursor):
+            par = container.add_paragraph()
+            first = info["lines"][0]
+            align = _of_align(info["bbox"], left, right, len(info["lines"]), info["justified"])
+            par.paragraph_format.alignment = alignments[align]
+            if align in ("left", "justify"):
+                x0 = info["bbox"][0]
+                if len(info["lines"]) > 1:
+                    rest = min(ln["bbox"][0] for ln in info["lines"][1:])
+                    if first["bbox"][0] - rest > 3 and _OF_BULLET.match("".join(t for t, _s in first["spans"])):
+                        par.paragraph_format.left_indent = Pt(max(rest - left, 0))  # madde imi: asılı girinti
+                        par.paragraph_format.first_line_indent = Pt(first["bbox"][0] - rest)
+                    else:
+                        par.paragraph_format.left_indent = Pt(max(rest - left, 0))
+                        if first["bbox"][0] - rest > 3:
+                            par.paragraph_format.first_line_indent = Pt(first["bbox"][0] - rest)
+                        elif rest - first["bbox"][0] > 3:
+                            par.paragraph_format.first_line_indent = Pt(first["bbox"][0] - rest)
+                elif x0 - left > 3:
+                    par.paragraph_format.left_indent = Pt(x0 - left)
+            before = info["bbox"][1] - cursor if cursor is not None else info["bbox"][1]
+            set_spacing(par, info, before)
+            fill_par(par, info)
+            return info["bbox"][1] + len(info["lines"]) * max(info["pitch"], info["size"] * 1.05)
+
+        def gap_before(item, cursor):
+            gap = item["bbox"].y0 - cursor if cursor is not None else 0
+            if gap > 2:
+                par = out.add_paragraph()
+                pf = par.paragraph_format
+                pf.space_before = pf.space_after = Pt(0)
+                pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+                pf.line_spacing = Pt(min(gap, 600.0))
+
+        def add_cols(item, page, left, cursor):
+            gap_before(item, cursor)
+            cols = item["cols"]
+            tbl = out.add_table(rows=1, cols=len(cols))
+            tbl.autofit = False
+            ind = OxmlElement("w:tblInd")
+            ind.set(qn("w:w"), str(int(max(cols[0][0]["bbox"].x0 - left, 0) * 20)))
+            ind.set(qn("w:type"), "dxa")
+            tbl._tbl.tblPr.append(ind)
+            starts = [g[0]["bbox"].x0 for g in cols]
+            ends = starts[1:] + [max(i["bbox"].x1 for i in cols[-1])]
+            for j, group in enumerate(cols):
+                cell = tbl.cell(0, j)
+                cell.width = Pt(ends[j] - starts[j])
+                first_par = cell.paragraphs[0]
+                top_cursor = item["bbox"].y0
+                cur = None
+                for item2 in group:
+                    cur = add_text(cell, item2["info"], starts[j], max(i["bbox"].x1 for i in group), cur if cur is not None else top_cursor)
+                first_par._element.getparent().remove(first_par._element)
+            return item["bbox"].y1
+
+        def add_image(item, left, right, pw, cursor):
+            bbox = item["bbox"]
+            par = out.add_paragraph()
+            pf = par.paragraph_format
+            pf.space_after = Pt(0)
+            pf.space_before = Pt(max(0.0, min(bbox.y0 - cursor, 600.0)) if cursor is not None else bbox.y0)
+            align = _of_align(bbox, left, right)
+            if align == "center":
+                pf.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif bbox.x0 - left > 3:
+                pf.left_indent = Pt(bbox.x0 - left)
+            width = min(bbox.width, max(pw - left - right, 40))
+            try:
+                par.add_run().add_picture(io.BytesIO(item["data"]), width=Pt(width), height=Pt(bbox.height * width / bbox.width))
+            except Exception:  # noqa: BLE001 - tanınmayan resim biçimi
+                return cursor
+            return bbox.y1
+
+        def add_table(item, page, hlines, fills, left, cursor):
+            table = item["table"]
+            xs, ys, spans = _of_grid(table)
+            if len(xs) < 2 or len(ys) < 2 or not spans:
+                return cursor
+            gap_before(item, cursor)
+            tbl = out.add_table(rows=len(ys) - 1, cols=len(xs) - 1)
+            if item.get("ruled", True):
+                tbl.style = "Table Grid"
+            col_align = _of_col_aligns(page, spans, hlines)
+            tbl.autofit = False
+            props = tbl._tbl.tblPr
+            ind = OxmlElement("w:tblInd")
+            ind.set(qn("w:w"), str(int(max(xs[0] - left, 0) * 20)))
+            ind.set(qn("w:type"), "dxa")
+            props.append(ind)
+            for i, row in enumerate(tbl.rows):
+                row.height = Pt(max(ys[i + 1] - ys[i], 4))
+                row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+                for j, cell in enumerate(row.cells):
+                    cell.width = Pt(xs[j + 1] - xs[j])
+            for r0, c0, r1, c1, rect in spans:
+                cell = tbl.cell(r0, c0)
+                if r1 > r0 or c1 > c0:
+                    cell = cell.merge(tbl.cell(r1, c1))
+                fill = _of_cell_fill(rect, fills)
+                if fill:
+                    shade = OxmlElement("w:shd")
+                    shade.set(qn("w:val"), "clear")
+                    shade.set(qn("w:color"), "auto")
+                    shade.set(qn("w:fill"), "%02X%02X%02X" % fill)
+                    cell._tc.get_or_add_tcPr().append(shade)
+                blocks = _of_cell_blocks(page, fitz.Rect(rect.x0 + 0.5, rect.y0 + 0.5, rect.x1 - 0.5, rect.y1 - 0.5), hlines)
+                first = True
+                for info in blocks:
+                    par = cell.paragraphs[0] if first else cell.add_paragraph()
+                    first = False
+                    par.paragraph_format.alignment = alignments[col_align.get(c0) or _of_align(info["bbox"], rect.x0, rect.x1)]
+                    set_spacing(par, info, 0)
+                    fill_par(par, info)
+            return table.bbox[3]
+
         with fitz.open(pdf_path) as doc:
             total = len(doc)
+            normal = out.styles["Normal"]
+            normal.paragraph_format.space_after = Pt(0)
+            normal.paragraph_format.space_before = Pt(0)
             for number, page in enumerate(doc, 1):
+                rect = page.rect
+                section = out.sections[0] if number == 1 else out.add_section(WD_SECTION.NEW_PAGE)
                 if number > 1:
-                    out.add_page_break()
-                blocks = [b for b in page.get_text("dict", sort=True)["blocks"]
-                          if b.get("type") == 0 and any(sp["text"].strip() for ln in b["lines"] for sp in ln["spans"])]
-                if not editable or not blocks:
-                    out.add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), width=Inches(6.2))
+                    marker = out.paragraphs[-1]  # bölüm sonu paragrafı sayfayı taşırmasın
+                    marker.paragraph_format.space_before = Pt(0)
+                    marker.paragraph_format.space_after = Pt(0)
+                    marker.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+                    marker.paragraph_format.line_spacing = Pt(1)
+                section.page_width, section.page_height = Pt(rect.width), Pt(rect.height)
+                section.header_distance = section.footer_distance = Pt(0)
+                has_text = any(b.get("type") == 0 and any(sp["text"].strip() for ln in b["lines"] for sp in ln["spans"])
+                               for b in page.get_text("dict")["blocks"])
+                if not editable or not has_text:
+                    section.left_margin = section.right_margin = section.top_margin = Pt(0)
+                    section.bottom_margin = Pt(0)
+                    par = out.add_paragraph()
+                    par.paragraph_format.space_after = Pt(0)
+                    par.add_run().add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), width=Pt(rect.width - 3))
                 else:
-                    for block in blocks:
-                        paragraph = out.add_paragraph()
-                        lines = block["lines"]
-                        for li, line in enumerate(lines):
-                            for si, span in enumerate(line["spans"]):
-                                text = PDFProcessor._clean_text(span["text"])
-                                if li < len(lines) - 1 and si == len(line["spans"]) - 1:
-                                    text += " "  # satır sonu: akışlı paragraf
-                                if not text:
-                                    continue
-                                run = paragraph.add_run(text)
-                                run.bold = bool(span["flags"] & 16)
-                                run.italic = bool(span["flags"] & 2)
-                                run.font.size = Pt(max(6, min(round(span["size"] * 2) / 2, 72)))
-                    for _bbox, data in PDFProcessor._page_images(doc, page):
-                        try:
-                            out.add_picture(io.BytesIO(data), width=Inches(4.5))
-                        except Exception:  # noqa: BLE001 - tanınmayan resim biçimi
-                            continue
+                    items, (ml, mr, mt, mb), hlines, fills = _of_page_items(doc, page)
+                    items = _of_columns(items, ml, rect.width - mr)
+                    if number == 1:
+                        sizes = Counter((it["info"]["lines"][0]["spans"][0][1]["font"], round(it["info"]["size"]))
+                                        for it in items if it["kind"] == "text")
+                        if sizes:
+                            (font, size), _n = sizes.most_common(1)[0]
+                            normal.font.name = font
+                            normal.font.size = Pt(size)
+                    section.left_margin, section.right_margin = Pt(ml), Pt(mr)
+                    section.top_margin, section.bottom_margin = Pt(mt), Pt(min(mb, 28.0))  # taşma payı
+                    cursor = mt
+                    for item in items:
+                        if item["kind"] == "text":
+                            cursor = add_text(out, item["info"], ml, rect.width - mr, cursor)
+                        elif item["kind"] == "cols":
+                            cursor = add_cols(item, page, ml, cursor)
+                        elif item["kind"] == "table":
+                            cursor = add_table(item, page, hlines, fills, ml, cursor)
+                        else:
+                            cursor = add_image(item, ml, mr, rect.width, cursor)
                 if progress:
                     progress(number, total)
-            out.save(output_path)
+        out.save(output_path)
 
     @staticmethod
     def export_xlsx(pdf_path, output_path, progress=None):
-        """Excel (.xlsx): sayfalardaki tabloları ayrı sayfalara (S<sayfa>-T<tablo>) yazar; hiç tablo bulunamazsa
-        metni satır satır 'Metin' sayfasına koyar. Tablo sayısını döndürür (0 = yalnızca metin)."""
+        """Excel (.xlsx): sayfalardaki tabloları (çizgili; çizgisiz sütunlu düzen de denenir) gerçek hücrelere yazar:
+        sayılar sayı olarak (Türkçe biçim), yazı biçimi, hizalama, zemin rengi, birleşik hücre, sütun genişliği ve satır
+        yüksekliği korunur; sayfalara bölünmüş tablo tek sayfada birleştirilir. Hiç tablo yoksa metin satır satır
+        'Metin' sayfasına konur. Tablo sayısını döndürür (0 = yalnızca metin)."""
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
         clean = PDFProcessor._clean_text
         book = Workbook()
         book.remove(book.active)
+        thin = Side(style="thin", color="999999")
         tables_found = 0
+        last = None  # önceki tablo: devam kontrolü için
         with fitz.open(pdf_path) as doc:
             total = len(doc)
             for number, page in enumerate(doc, 1):
+                hlines, fills = _of_marks(page)
+                found = []
                 try:
-                    tables = page.find_tables().tables
+                    found = [(t, True) for t in page.find_tables().tables if t.col_count >= 2 and len(t.cells) >= 2]
                 except Exception:  # noqa: BLE001
-                    tables = []
-                for k, table in enumerate(tables, 1):
-                    sheet = book.create_sheet(f"S{number}-T{k}")
-                    for row in table.extract():
-                        sheet.append([clean(cell) for cell in row])
-                    tables_found += 1
+                    found = []
+                if not found:  # çizgisiz sütunlu düzen: yalnızca tablo gibi görünüyorsa kabul edilir
+                    try:
+                        for t in page.find_tables(strategy="text").tables:
+                            rows = t.extract()
+                            cells = [c for r in rows for c in r]
+                            filled = [c for c in cells if c and str(c).strip()]
+                            if (t.col_count >= 2 and len(rows) >= 3 and len(filled) >= 0.6 * len(cells)
+                                    and sum(len(str(c)) for c in filled) / max(len(filled), 1) < 30):
+                                found.append((t, False))
+                    except Exception:  # noqa: BLE001
+                        pass
+                for table, ruled in found:
+                    xs, ys, spans = _of_grid(table)
+                    if len(xs) < 2 or len(ys) < 2 or not spans:
+                        continue
+                    ncols = len(xs) - 1
+                    near_bottom = last and last["page"] == number - 1 and last["bottom"] > 0.8 * last["height"]
+                    if near_bottom and last["ncols"] == ncols and table.bbox[1] < 0.25 * page.rect.height:
+                        sheet, base = last["sheet"], last["next_row"]
+                        skip_first = True
+                    else:
+                        tables_found += 1
+                        sheet = book.create_sheet(f"S{number}-T{tables_found}"[:31])
+                        base, skip_first = 1, False
+                    row_shift = 0
+                    for r0, c0, r1, c1, rect in spans:
+                        if skip_first and r0 == 0:
+                            row_shift = max(row_shift, r1 + 1)
+                    cells_text = {}
+                    col_align = _of_col_aligns(page, spans, hlines)
+                    for r0, c0, r1, c1, rect in spans:
+                        if skip_first and r0 < row_shift:
+                            continue
+                        blocks = _of_cell_blocks(page, fitz.Rect(rect.x0 + 0.5, rect.y0 + 0.5, rect.x1 - 0.5, rect.y1 - 0.5), hlines)
+                        text = "\n".join("".join(t if t is not None else "\n" for t, _s in _of_join(b)).strip() for b in blocks)
+                        text = clean(text).strip()
+                        row = base + r0 - (row_shift if skip_first else 0)
+                        cell = sheet.cell(row=row, column=c0 + 1)
+                        number_value = _of_number(text) if "\n" not in text else None
+                        if number_value:
+                            cell.value, cell.number_format = number_value
+                        else:
+                            cell.value = text or None
+                        st = blocks[0]["lines"][0]["spans"][0][1] if blocks else None
+                        if st:
+                            cell.font = Font(name=st["font"], size=max(6, min(round(st["size"]), 72)), bold=st["bold"],
+                                             italic=st["italic"], underline="single" if st["underline"] else None,
+                                             strike=st["strike"] or None,
+                                             color=_of_hex(st["color"]) if st["color"] & 0xFFFFFF else None)
+                        align = _of_align(blocks[0]["bbox"], rect.x0, rect.x1) if blocks else "left"
+                        align = col_align.get(c0) or align
+                        if number_value:
+                            align = "right" if align == "left" else align
+                        cell.alignment = Alignment(horizontal={"justify": "left"}.get(align, align), vertical="center",
+                                                   wrap_text=True)
+                        fill = _of_cell_fill(rect, fills)
+                        if fill:
+                            cell.fill = PatternFill("solid", fgColor="%02X%02X%02X" % fill)
+                        if ruled:
+                            for rr in range(r0, r1 + 1):
+                                for cc in range(c0, c1 + 1):
+                                    sheet.cell(row=base + rr - (row_shift if skip_first else 0), column=cc + 1).border = Border(
+                                        left=thin, right=thin, top=thin, bottom=thin)
+                        if r1 > r0 or c1 > c0:
+                            sheet.merge_cells(start_row=row, start_column=c0 + 1,
+                                              end_row=base + r1 - (row_shift if skip_first else 0), end_column=c1 + 1)
+                        cells_text[(r0, c0)] = text
+                    for j in range(ncols):
+                        letter = get_column_letter(j + 1)
+                        width = max((xs[j + 1] - xs[j]) / 5.2, 4)
+                        current = sheet.column_dimensions[letter].width or 0
+                        sheet.column_dimensions[letter].width = min(max(current, width), 80)
+                    for i in range(len(ys) - 1):
+                        if skip_first and i < row_shift:
+                            continue
+                        idx = base + i - (row_shift if skip_first else 0)
+                        sheet.row_dimensions[idx].height = min(max(ys[i + 1] - ys[i], 10), 409)
+                    rows_written = len(ys) - 1 - (row_shift if skip_first else 0)
+                    last = {"sheet": sheet, "ncols": ncols, "page": number, "bottom": table.bbox[3],
+                            "height": page.rect.height, "next_row": base + rows_written}
                 if progress:
                     progress(number, total)
             if not tables_found:
                 sheet = book.create_sheet("Metin")
                 sheet.append(["Sayfa", "Metin"])
                 for number, page in enumerate(doc, 1):
-                    for line in page.get_text("text").splitlines():
+                    for line in page.get_text("text", sort=True).splitlines():
                         if line.strip():
                             sheet.append([number, clean(line)])
+                sheet.column_dimensions["B"].width = 100
         book.save(output_path)
         return tables_found
 
     @staticmethod
     def export_pptx(pdf_path, output_path, editable=True, progress=None):
-        """PowerPoint (.pptx): her sayfa bir slayt. editable=True resimleri ve metin bloklarını konumlarıyla metin
-        kutusu olarak koyar; False sayfayı tek resim olarak koyar (görünüm birebir, metin notlarda)."""
+        """PowerPoint (.pptx): her sayfa bir slayt. editable=True yazıları (yazı tipi, boyut, renk, hizalama dahil)
+        kendi konumlarında düzenlenebilir metin kutusu yapar; yazı çıkarılmış sayfa görünümü (çizgiler, tablo
+        kenarlıkları, şekiller, resimler) arka plan resmi olur. editable=False sayfayı tek resim olarak koyar."""
         import io
         from pptx import Presentation
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
         from pptx.util import Emu, Pt
         prs = Presentation()
+        alignments = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT, "justify": PP_ALIGN.LEFT}
         with fitz.open(pdf_path) as doc:
             first = doc[0].rect
             prs.slide_width = Emu(12192000)
@@ -956,35 +1681,83 @@ class PDFProcessor:
             for number, page in enumerate(doc, 1):
                 slide = prs.slides.add_slide(blank)
                 rect = page.rect
-                sx = prs.slide_width / rect.width
-                sy = prs.slide_height / rect.height
+                emu = prs.slide_width / rect.width  # nokta başına EMU
+                font_scale = 960.0 / rect.width     # slayt 960 pt genişliğinde
+                hlines, _fills = _of_marks(page)
+                blocks = []
+                flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
+                try:
+                    tables = [t for t in page.find_tables().tables if t.row_count >= 1 and t.col_count >= 2 and len(t.cells) >= 2]
+                except Exception:  # noqa: BLE001
+                    tables = []
+                tbboxes = [fitz.Rect(t.bbox) for t in tables]
+                for block in page.get_text("dict", flags=flags)["blocks"]:
+                    if block.get("type") == 0:
+                        center = fitz.Point((block["bbox"][0] + block["bbox"][2]) / 2, (block["bbox"][1] + block["bbox"][3]) / 2)
+                        if not any(center in tb for tb in tbboxes):
+                            blocks.extend(_of_block_infos(block, hlines))
+                for table in tables:  # tablo: her hücre ayrı metin kutusu
+                    _xs, _ys, spans = _of_grid(table)
+                    col_align = _of_col_aligns(page, spans, hlines)
+                    for _r0, _c0, _r1, _c1, crect in spans:
+                        for info in _of_cell_blocks(page, fitz.Rect(crect.x0 + 0.5, crect.y0 + 0.5, crect.x1 - 0.5, crect.y1 - 0.5), hlines):
+                            info["cell"] = crect
+                            info["align"] = col_align.get(_c0)
+                            blocks.append(info)
                 text = PDFProcessor._clean_text(page.get_text("text"))
-                if editable and text.strip():
-                    for bbox, data in PDFProcessor._page_images(doc, page):
-                        try:
-                            slide.shapes.add_picture(io.BytesIO(data), Emu(int(bbox.x0 * sx)), Emu(int(bbox.y0 * sy)),
-                                                     Emu(int(bbox.width * sx)), Emu(int(bbox.height * sy)))
-                        except Exception:  # noqa: BLE001
-                            continue
-                    for block in page.get_text("dict", sort=True)["blocks"]:
-                        if block.get("type") != 0:
-                            continue
-                        x0, y0, x1, y1 = block["bbox"]
-                        box = slide.shapes.add_textbox(Emu(int(x0 * sx)), Emu(int(y0 * sy)),
-                                                       Emu(int(max(x1 - x0, 20) * sx)), Emu(int(max(y1 - y0, 12) * sy)))
+                background = None
+                if editable and blocks:
+                    try:
+                        with fitz.open() as tmp:
+                            tmp.insert_pdf(doc, from_page=number - 1, to_page=number - 1)
+                            tpage = tmp[0]
+                            for info in blocks:
+                                tpage.add_redact_annot(fitz.Rect(info["bbox"]), fill=False)
+                            tpage.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+                            background = tpage.get_pixmap(dpi=170).tobytes("png")
+                    except Exception:  # noqa: BLE001 - yazı çıkarılamazsa slayt resim olarak konur
+                        background = None
+                if background is None:
+                    slide.shapes.add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), 0, 0,
+                                             prs.slide_width, prs.slide_height)
+                else:
+                    slide.shapes.add_picture(io.BytesIO(background), 0, 0, prs.slide_width, int(rect.height * emu))
+                    for info in blocks:
+                        x0, y0, x1, y1 = info["bbox"]
+                        cell = info.get("cell")
+                        align = _of_align(info["bbox"], cell.x0 if cell else 0, cell.x1 if cell else rect.width,
+                                          len(info["lines"]), info["justified"])
+                        if info.get("align"):
+                            align = info["align"]
+                        if cell:
+                            x0, x1 = cell.x0 + 1, cell.x1 - 1
+                        line_h = max(info["lines"][0]["bbox"][3] - info["lines"][0]["bbox"][1], 1.0)
+                        pitch = max(info["pitch"], info["size"] * 1.05)
+                        lead = max(pitch - line_h, 0.0)
+                        slack = 0 if cell else 0.08 * (x1 - x0) + 4
+                        bx = {"left": x0, "justify": x0, "center": x0 - slack / 2, "right": x0 - slack}[align]
+                        box = slide.shapes.add_textbox(Emu(int(bx * emu)), Emu(int((y0 - lead * 0.8) * emu)),
+                                                       Emu(int((x1 - x0 + slack) * emu)), Emu(int((y1 - y0 + lead) * emu)))
                         frame = box.text_frame
                         frame.word_wrap = True
-                        for li, line in enumerate(block["lines"]):
+                        frame.margin_left = frame.margin_right = frame.margin_top = frame.margin_bottom = 0
+                        frame.vertical_anchor = MSO_ANCHOR.TOP
+                        for li, line in enumerate(info["lines"]):
                             paragraph = frame.paragraphs[0] if li == 0 else frame.add_paragraph()
-                            for span in line["spans"]:
+                            paragraph.alignment = alignments[align]
+                            paragraph.space_before = Pt(0)
+                            paragraph.space_after = Pt(0)
+                            paragraph.line_spacing = Pt(pitch * font_scale)
+                            for chunk, st in line["spans"]:
                                 run = paragraph.add_run()
-                                run.text = PDFProcessor._clean_text(span["text"])
-                                run.font.size = Pt(max(5, min(round(span["size"] * (960.0 / rect.width) * 2) / 2, 96)))  # slayt 960 pt genişliğinde
-                                run.font.bold = bool(span["flags"] & 16)
-                                run.font.italic = bool(span["flags"] & 2)
-                else:
-                    pix = page.get_pixmap(dpi=150)
-                    slide.shapes.add_picture(io.BytesIO(pix.tobytes("png")), 0, 0, prs.slide_width, prs.slide_height)
+                                run.text = chunk
+                                run.font.name = st["font"]
+                                run.font.size = Pt(max(4, min(round(st["size"] * font_scale * 2) / 2, 200)))
+                                run.font.bold = st["bold"]
+                                run.font.italic = st["italic"]
+                                if st["underline"]:
+                                    run.font.underline = True
+                                run.font.color.rgb = RGBColor((st["color"] >> 16) & 255, (st["color"] >> 8) & 255, st["color"] & 255)
                 slide.notes_slide.notes_text_frame.text = text
                 if progress:
                     progress(number, total)

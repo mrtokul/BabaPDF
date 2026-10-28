@@ -7,6 +7,14 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.0 — 28.10.2026
+Değişen
+- Word/Excel/PowerPoint olarak kaydet baştan yazıldı; çıktı girdi PDF ile yan yana karşılaştırılarak düzeltildi.
+- Word: sayfa boyutu ve kenar boşlukları PDF'ten alınır; yazı tipi, boyut, kalın/italik/altı çizili, renk, hizalama (sola/ortaya/sağa/iki yana), girinti ve satır aralığı korunur; madde imleri tek satırda kalır; tablolar gerçek Word tablosu olur (birleşik hücre, zemin rengi, sağa yaslı sayılar); resimler ve çizimler yerinde durur; iki sütunlu sayfalarda sütun düzeni korunur. Taranmış sayfa resim olarak konur.
+- PowerPoint: yazılar yazı tipi/renk/hizasıyla kendi yerinde düzenlenebilir kutu olur; tablo hücreleri ayrı kutu; çizgiler, şekiller ve resimler yazısız arka plan resmidir (üst üste binme biter).
+- Excel: tablolar gerçek hücre olur; sayılar (Türkçe biçim, yüzde dahil) sayı olarak yazılır; yazı biçimi, hizalama, zemin rengi, kenarlık, birleşik hücre, sütun genişliği ve satır yüksekliği korunur; çizgisiz sütunlu tablolar da bulunur; sayfaya bölünmüş tablo tek sayfada birleşir.
+- Yeni testler eklendi. Windows'ta Word/PowerPoint ile gerçek dosya üzerinde elle denenmesi önerilir.
+
 ## 1.11.1 — 28.10.2026
 Değişen
 - Paket küçültüldü: programın kullanmadığı cv2 (OpenCV), onnxruntime, numpy, pandas, matplotlib, scipy, networkx ve pymupdf4llm/pymupdf-layout `pdf_gui.spec` içinde dışarıda bırakıldı (pymupdf 2.0 bağımlılıkları olarak pakete giriyordu; ~200 MB). Tek dosya EXE'nin açıkça daha hızlı açılması beklenir; yeni «Son açılış süresi» Hakkında penceresinde görünür. İlk derlemede OCR, Word/Excel/PPT dışa aktarma, şifreli PDF açma ve yazı ekleme elle denenmelidir.

@@ -132,3 +132,62 @@ def test_powerpoint_aktarimi(pdf_path, tmp_path):
 def test_gecersiz_kontrol_karakterleri_temizlenir():
     assert P._clean_text("a\x00b\x0cc\ud800d") == "abcd"
     assert P._clean_text(None) == ""
+
+
+@pytest.fixture
+def rapor_pdf(tmp_path):
+    """Başlık, madde imli liste, çizgili tablo (sayılı, sağa yaslı) ve iki sütunlu metin içeren sayfa."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 80), "Rapor", fontsize=22, fontname="hebo", color=(0.8, 0, 0))
+    page.insert_text((72, 120), "•", fontsize=11)
+    page.insert_text((90, 120), "Birinci madde", fontsize=11)
+    page.insert_text((72, 140), "•", fontsize=11)
+    page.insert_text((90, 140), "Ikinci madde", fontsize=11)
+    for x in (72, 172, 272):
+        page.draw_line((x, 200), (x, 260))
+    for y in (200, 230, 260):
+        page.draw_line((72, y), (272, y))
+    for r, (a, b) in enumerate((("Ad", "Deger"), ("Elma", "1.250,50"))):
+        page.insert_text((80, 220 + r * 30), a, fontsize=10)
+        page.insert_text((266 - pymupdf.get_text_length(b, "helv", 10), 220 + r * 30), b, fontsize=10)
+    metin = "Lorem ipsum dolor sit amet consectetur " * 12
+    page.insert_textbox(pymupdf.Rect(72, 320, 290, 500), metin, fontsize=10)
+    page.insert_textbox(pymupdf.Rect(310, 320, 528, 500), metin, fontsize=10)
+    path = tmp_path / "r.pdf"
+    doc.save(path)
+    return str(path)
+
+
+def test_word_duzeni_korunur(rapor_pdf, tmp_path):
+    from docx import Document
+    out = str(tmp_path / "r.docx")
+    P.export_docx(rapor_pdf, out)
+    d = Document(out)
+    assert d.sections[0].page_width.pt == pytest.approx(595, abs=1)  # PDF sayfa boyutu (A4)
+    assert len(d.tables) >= 2  # gerçek tablo + iki sütunlu düzen tablosu
+    cells = [c.text for t in d.tables for r in t.rows for c in r.cells]
+    assert "Elma" in cells and "1.250,50" in cells
+    texts = [p.text for p in d.paragraphs]
+    assert any(t[:1] in ("•", "·") and "Birinci madde" in t for t in texts)  # madde imi aynı satırda
+    title = next(r for p in d.paragraphs for r in p.runs if r.text == "Rapor")
+    assert title.bold and title.font.size.pt == 22 and title.font.color.rgb is not None
+    assert not any("" in t for t in texts)
+
+
+def test_excel_sayilar_sayi_olur(rapor_pdf, tmp_path):
+    from openpyxl import load_workbook
+    out = str(tmp_path / "r.xlsx")
+    assert P.export_xlsx(rapor_pdf, out) >= 1
+    sheet = load_workbook(out).worksheets[0]
+    assert sheet["A2"].value == "Elma"
+    assert sheet["B2"].value == pytest.approx(1250.5)
+    assert sheet["B2"].alignment.horizontal == "right"
+
+
+def test_powerpoint_tablo_hucreleri_ayri_kutu(rapor_pdf, tmp_path):
+    from pptx import Presentation
+    out = str(tmp_path / "r.pptx")
+    P.export_pptx(rapor_pdf, out)
+    boxes = [s.text_frame.text for s in Presentation(out).slides[0].shapes if s.has_text_frame]
+    assert "Elma" in boxes and "1.250,50" in boxes
