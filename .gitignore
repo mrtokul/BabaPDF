@@ -1,0 +1,16 @@
+build/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+# özel anahtar / sertifika dosyaları depoya girmez (yalnızca ortak .cer serbest)
+*.pfx
+*.p12
+*.key
+*.pem
+!kurulum/BabaPDF-yayinci.cer
+# deneme çıktıları
+debug_*.txt
+latest_*.txt
+open_*.txt
+*.yedek.pdf

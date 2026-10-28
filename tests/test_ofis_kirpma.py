@@ -1,0 +1,134 @@
+"""Kırpma, sayfa ekleme/silme ve Office dışa aktarma çekirdek işlevleri için testler (arayüz açılmaz)."""
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+pymupdf = pytest.importorskip("pymupdf")
+import pdf_gui as g  # noqa: E402
+
+P = g.PDFProcessor
+
+
+def _doc(pages=3):
+    doc = pymupdf.open()
+    for n in range(pages):
+        page = doc.new_page()
+        page.insert_text((72, 100), f"Baslik {n + 1}", fontsize=20)
+        page.insert_text((72, 140), "Normal metin satiri", fontsize=11)
+    return doc
+
+
+def test_alana_kirpma_ve_kaldirma():
+    doc = _doc()
+    P.crop_to_rect(doc, [0], pymupdf.Rect(50, 50, 250, 250))
+    assert round(doc[0].rect.width) == 200 and round(doc[0].rect.height) == 200
+    assert doc[1].rect.width > 500  # diğer sayfa etkilenmez
+    assert P.reset_crop(doc, [0, 1, 2]) == 1
+    assert doc[0].cropbox == doc[0].mediabox
+
+
+def test_kirpilmis_sayfa_tekrar_kirpilinca_kaymaz():
+    doc = _doc(1)
+    P.crop_to_rect(doc, [0], pymupdf.Rect(100, 100, 400, 500))
+    P.crop_to_rect(doc, [0], pymupdf.Rect(10, 10, 100, 100))   # görünen uzayda
+    assert doc[0].cropbox == pymupdf.Rect(110, 110, 200, 200)
+
+
+def test_donuk_sayfada_kirpma():
+    doc = _doc(1)
+    doc[0].set_rotation(90)
+    P.crop_to_rect(doc, [0], pymupdf.Rect(0, 0, 200, 100))  # ekranda sol üst 200x100
+    assert round(doc[0].rect.width) == 200 and round(doc[0].rect.height) == 100
+
+
+def test_cok_kucuk_alan_reddedilir():
+    with pytest.raises(ValueError):
+        P.crop_to_rect(_doc(1), [0], pymupdf.Rect(10, 10, 15, 15))
+
+
+def test_kenar_kirpma_iki_kez_yapilabilir():
+    doc = _doc(1)
+    P.crop_margins(doc, 20, [0])
+    P.crop_margins(doc, 20, [0])
+    assert round(doc[0].rect.width) == round(595.28 - 80)
+
+
+def test_bos_sayfa_ekleme_ve_aralik_silme():
+    doc = _doc(3)
+    P.insert_blank_pages(doc, 0, 2)
+    assert len(doc) == 5 and doc[1].get_text().strip() == "" and "Baslik 2" in doc[3].get_text()
+    P.insert_blank_pages(doc, -1, 1)
+    assert doc[0].get_text().strip() == "" and len(doc) == 6
+    assert P.delete_page_numbers(doc, P.parse_page_range("1-3", len(doc))) == 3
+    assert len(doc) == 3
+    with pytest.raises(ValueError):
+        P.delete_page_numbers(doc, [1, 2, 3])
+    with pytest.raises(ValueError):
+        P.insert_blank_pages(doc, 0, 0)
+
+
+@pytest.fixture
+def pdf_path(tmp_path):
+    doc = _doc(2)
+    page = doc[0]
+    # tablo benzeri çizgiler + metin
+    for x in (72, 172, 272):
+        page.draw_line((x, 200), (x, 260))
+    for y in (200, 230, 260):
+        page.draw_line((72, y), (272, y))
+    for r, row in enumerate((("Ad", "Deger"), ("Elma", "5"))):
+        for c, cell in enumerate(row):
+            page.insert_text((80 + c * 100, 220 + r * 30), cell, fontsize=10)
+    path = tmp_path / "k.pdf"
+    doc.save(path)
+    return str(path)
+
+
+def test_word_aktarimi(pdf_path, tmp_path):
+    from docx import Document
+    out = str(tmp_path / "k.docx")
+    P.export_docx(pdf_path, out, editable=True)
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    assert "Baslik 1" in text and "Baslik 2" in text
+    out2 = str(tmp_path / "k2.docx")
+    P.export_docx(pdf_path, out2, editable=False)
+    assert len(Document(out2).inline_shapes) == 2  # her sayfa bir resim
+
+
+def test_excel_aktarimi_tablo_ve_metin(pdf_path, tmp_path):
+    from openpyxl import load_workbook
+    out = str(tmp_path / "k.xlsx")
+    tables = P.export_xlsx(pdf_path, out)
+    book = load_workbook(out)
+    if tables:
+        assert any(name.startswith("S1-T") for name in book.sheetnames)
+    else:
+        assert book.sheetnames == ["Metin"]
+    plain = pymupdf.open()
+    plain.new_page().insert_text((72, 100), "sadece metin")
+    plain_path = str(tmp_path / "p.pdf")
+    plain.save(plain_path)
+    out2 = str(tmp_path / "p.xlsx")
+    assert P.export_xlsx(plain_path, out2) == 0
+    sheet = load_workbook(out2)["Metin"]
+    assert [c.value for c in sheet[2]] == [1, "sadece metin"]
+
+
+def test_powerpoint_aktarimi(pdf_path, tmp_path):
+    from pptx import Presentation
+    for editable in (True, False):
+        out = str(tmp_path / f"k{editable}.pptx")
+        P.export_pptx(pdf_path, out, editable=editable)
+        prs = Presentation(out)
+        assert len(prs.slides) == 2
+        assert "Baslik 1" in prs.slides[0].notes_slide.notes_text_frame.text
+    editable_prs = Presentation(str(tmp_path / "kTrue.pptx"))
+    assert any(sh.has_text_frame and "Baslik 1" in sh.text_frame.text for sh in editable_prs.slides[0].shapes)
+
+
+def test_gecersiz_kontrol_karakterleri_temizlenir():
+    assert P._clean_text("a\x00b\x0cc\ud800d") == "abcd"
+    assert P._clean_text(None) == ""

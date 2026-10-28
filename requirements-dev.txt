@@ -1,0 +1,4 @@
+# Kontrol: kontrol.bat (sözdizimi + pyflakes + pytest)
+-r requirements-build.txt
+pytest==9.1.1
+pyflakes==4.0.3

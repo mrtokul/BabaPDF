@@ -1,0 +1,34 @@
+BABA PDF — LİSANS VE ÜÇÜNCÜ TARAF BİLDİRİMİ
+
+Baba PDF, GNU Affero Genel Kamu Lisansı sürüm 3 (AGPL-3.0) kapsamında dağıtılır.
+Bu lisansın tam metni aynı klasördeki LICENSE.txt dosyasındadır.
+
+Bu programı kurarak lisans koşullarını kabul etmiş olursunuz. Program HERHANGİ BİR GARANTİ
+OLMAKSIZIN, "olduğu gibi" sunulur; ayrıntı için LICENSE.txt dosyasının 15–17. maddelerine bakın.
+
+KAYNAK KODU
+Programın tam kaynak kodu (derleme betikleri dahil) kurulum klasöründeki «kaynak» klasöründedir.
+AGPL-3.0 uyarınca bu kodu inceleyebilir, değiştirebilir ve aynı lisansla paylaşabilirsiniz.
+Değiştirilmiş bir sürümü başkalarının ağ üzerinden kullanımına sunarsanız, değişikliklerin kaynak kodunu
+o kullanıcılara sunmanız gerekir (AGPL-3.0 madde 13).
+
+GİZLİLİK
+Belgeleriniz bilgisayarınızdan çıkmaz. Program kendiliğinden ağa bağlanmaz. «Güncellemeleri Denetle»
+yalnızca siz seçtiğinizde, sizin tanımladığınız https adresine GET isteği gönderir; belge veya kişisel veri göndermez.
+
+KULLANILAN BİLEŞENLER (kendi lisanslarıyla)
+- PyMuPDF — AGPL-3.0 (veya Artifex ticari lisansı); bu program AGPL-3.0 seçeneğiyle dağıtılır.
+- pdfplumber / pdfminer.six — MIT
+- Pillow — MIT-CMU (HPND)
+- pytesseract — Apache-2.0
+- Tesseract OCR motoru ve dil verileri — Apache-2.0
+- tkinterdnd2 — MIT
+- mobi (KindleUnpack tabanlı, MOBI/AZW3 açma) — GPL-3.0 (AGPL-3.0 ile uyumlu); loguru — MIT
+- pyHanko (+ cryptography, asn1crypto, xsdata, toposort) — MIT / Apache-2.0 / BSD
+- PyInstaller (paketleme aracı) — GPL-2.0-veya-sonrası, ön yükleyici için özel istisnayla
+- Python — PSF Lisansı
+
+YAYINCI SERTİFİKASI
+Kurulum paketindeki BabaPDF-yayinci.cer, bu programı imzalayan kendinden imzalı sertifikadır. Herkese açık bir
+sertifika otoritesince verilmemiştir. Kurulumda isteğe bağlı olarak yalnızca BU kullanıcı hesabı için güvenilir
+sayılır; kaldırmada geri alınır.
