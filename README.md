@@ -1,6 +1,6 @@
 # Baba PDF — kaynak kodu
 
-PDF görüntüleme, düzenleme, birleştirme, bölme, sıkıştırma, OCR, şifreleme ve dijital imza programı; ayrıca EPUB, MOBI, AZW3, IBA, RTF, FB2, XPS, CBZ ve SVG belgelerini okur (Windows, Tkinter + PyMuPDF).
+PDF görüntüleme, düzenleme, birleştirme, bölme, sıkıştırma, OCR, şifreleme programı; ayrıca EPUB, MOBI, AZW3, IBA, RTF, FB2, XPS, CBZ ve SVG belgelerini okur (Windows, Tkinter + PyMuPDF).
 Belgeler bilgisayardan çıkmaz; program kendiliğinden ağa bağlanmaz.
 
 **Lisans:** AGPL-3.0 (`LICENSE.txt`, `NOTICE.txt`). PyMuPDF AGPL olduğu için program da AGPL ile dağıtılır.

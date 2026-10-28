@@ -21,7 +21,7 @@ if os.path.isdir(tesseract_root):
             source = os.path.join(root, filename)
             relative = os.path.relpath(source, tesseract_root)
             datas.append((source, os.path.join("tesseract", os.path.dirname(relative))))
-for pkg in ("pdfplumber", "pdfminer", "pypdfium2", "pymupdf", "PIL", "pytesseract", "tkinterdnd2", "pyhanko", "asn1crypto", "cryptography", "xsdata", "toposort", "mobi", "loguru", "docx", "pptx", "openpyxl", "et_xmlfile", "xlsxwriter"):
+for pkg in ("pdfplumber", "pdfminer", "pypdfium2", "pymupdf", "PIL", "pytesseract", "tkinterdnd2", "cryptography", "mobi", "loguru", "docx", "pptx", "openpyxl", "et_xmlfile", "xlsxwriter"):
     try:
         d, b, h = collect_all(pkg)
         datas += d

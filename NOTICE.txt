@@ -24,7 +24,7 @@ KULLANILAN BİLEŞENLER (kendi lisanslarıyla)
 - Tesseract OCR motoru ve dil verileri — Apache-2.0
 - tkinterdnd2 — MIT
 - mobi (KindleUnpack tabanlı, MOBI/AZW3 açma) — GPL-3.0 (AGPL-3.0 ile uyumlu); loguru — MIT
-- pyHanko (+ cryptography, asn1crypto, xsdata, toposort) — MIT / Apache-2.0 / BSD
+- cryptography (pdfminer.six aracılığıyla şifreli PDF okuma) — Apache-2.0 / BSD
 - PyInstaller (paketleme aracı) — GPL-2.0-veya-sonrası, ön yükleyici için özel istisnayla
 - Python — PSF Lisansı
 

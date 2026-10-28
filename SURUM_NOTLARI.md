@@ -7,6 +7,11 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.11.0 — 28.10.2026
+Kaldırılan
+- Dijital imza işlevlerinin tümü kaldırıldı: «PDF'yi Dijital Olarak İmzala», «Dijital İmzaları Doğrula», «İmza Raporunu TXT Olarak Kaydet», «Sertifikayı Kontrol Et» ve açılış sayfasındaki «Dijital İmza» kartı. «Güvenlik ve İmza» menüsü «Güvenlik» oldu. Resim yerleştirme (imza resmi dahil) durur.
+- pyHanko, xsdata ve toposort paketleri artık gerekmez (EXE küçülür, açılış hızlanır). Kurulum paketinin kendi imzası (`kurulum\imzala_ve_paketle.ps1`) değişmedi.
+
 ## 1.10.1 — 28.10.2026
 Değişen
 - Yazı ekleme artık doğrudan açık sayfada yapılır: yazı sayfa üzerinde çerçeve içinde görünür, sayfada sürüklenir (boş yere tıklayınca oraya gelir; ok tuşları 1 nokta, Shift ile 10 nokta). Ayrı büyük önizleme penceresi kaldırıldı; yalnızca küçük bir «Yazı biçimi» paneli açılır (biçim ayarları, «Onayla ve ekle» / İptal). Yakınlaştırma ve kaydırma düzenleme sürerken de çalışır; başka araca geçilirse düzenleme iptal edilir.

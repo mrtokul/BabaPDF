@@ -6,9 +6,6 @@ pdfplumber==0.11.10
 pillow==12.3.0
 pytesseract==0.3.13
 tkinterdnd2==0.6.4
-pyHanko==0.37.0
-xsdata==26.2
-toposort==1.10
 mobi==0.4.1
 loguru==0.7.3
 standard-imghdr==3.13.0

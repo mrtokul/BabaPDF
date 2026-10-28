@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.11.0"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -2512,11 +2512,7 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         security_menu.add_command(label="Gizli Verileri ve Belge Bilgilerini Temizle", command=self.action_sanitize)
         security_menu.add_separator()
         security_menu.add_command(label="Görsel / İmza Resmi Yerleştir…", command=self.action_add_signature)
-        security_menu.add_command(label="Sertifikayı Kontrol Et…", command=self.action_prepare_certificate)
-        security_menu.add_command(label="PDF'yi Dijital Olarak İmzala…", command=self.action_sign_pdf)
-        security_menu.add_command(label="Dijital İmzaları Doğrula", command=self.action_validate_signatures)
-        security_menu.add_command(label="İmza Raporunu TXT Olarak Kaydet", command=self.action_export_signature_report)
-        menubar.add_cascade(label="Güvenlik ve İmza", menu=security_menu)
+        menubar.add_cascade(label="Güvenlik", menu=security_menu)
 
         tools_menu = tk.Menu(menubar, tearoff=0)
         tools_menu.add_command(label="PDF Boyutunu Küçült…", command=self.action_compress)
@@ -3159,14 +3155,11 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
                 ("🛠", "Form Editörü", self.action_form_editor, True),
                 ("✒", "Görsel / İmza Resmi Yerleştir", self.action_add_signature, True),
             ]),
-            ("🔐  Güvenlik ve imza", "rose", [
+            ("🔐  Güvenlik", "rose", [
                 ("🔓", "Şifreyi Kaldır", self.action_decrypt, True),
                 ("🛂", "İzinleri Değiştir", self.action_permissions, True),
                 ("⬛", "Metni Kalıcı Karart", self.action_redact, True),
                 ("🧼", "Gizli Verileri Temizle", self.action_sanitize, True),
-                ("📜", "Sertifikayı Kontrol Et", self.action_prepare_certificate, False),
-                ("✅", "İmzaları Doğrula", self.action_validate_signatures, True),
-                ("🧾", "İmza Raporunu Kaydet", self.action_export_signature_report, True),
             ]),
             ("🛠  Denetim ve bakım", "sky", [
                 ("ℹ", "Belge Bilgileri", self.action_document_info, True),
@@ -3248,7 +3241,7 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         title_row.pack(pady=(14, 0))
         tk.Label(title_row, text="📄", bg=t["bg"], font=("Segoe UI Emoji", 34)).pack(side="left", padx=(0, 10))
         tk.Label(title_row, text=APP_NAME, bg=t["bg"], fg=t["text"], font=(FONT_UI, 32, "bold")).pack(side="left")
-        tk.Label(wrap, text="PDF'lerinizi düzenleyin, birleştirin, imzalayın; EPUB, MOBI, AZW3, IBA ve RTF belgelerinizi okuyun — hepsi bilgisayarınızda, çevrimdışı.",
+        tk.Label(wrap, text="PDF'lerinizi düzenleyin, birleştirin, şifreleyin; EPUB, MOBI, AZW3, IBA ve RTF belgelerinizi okuyun — hepsi bilgisayarınızda, çevrimdışı.",
                  bg=t["bg"], fg=t["muted"], font=(FONT_UI, 11)).pack(pady=(2, 14))
 
         if not self.is_welcome:  # açık bir belge varsa ona dönüş yolu
@@ -3297,7 +3290,6 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             ("✂", "Sayfalara Böl", "Her sayfayı ayrı bir PDF dosyası yapın.", "sky", lambda: self._welcome_run(self.action_split)),
             ("🗜", "Boyut Küçült", "Dosyayı sıkıştırıp daha hafif hale getirin.", "lemon", lambda: self._welcome_run(self.action_compress)),
             ("🔎", "OCR ile Metin", "Taranmış belgelerden yazıyı çıkarın.", "rose", lambda: self._welcome_run(self.action_ocr)),
-            ("✍", "Dijital İmza", "Sertifikanızla belgeyi imzalayın.", "peach", lambda: self._welcome_run(self.action_sign_pdf)),
             ("🔒", "Şifrele", "PDF'yi parolayla koruyun.", "sky", lambda: self._welcome_run(self.action_encrypt)),
             ("📝", "Word / Excel / PPT", "PDF'yi Office biçiminde farklı kaydedin.", "mint", lambda: self._welcome_run(lambda: self.action_save_office("docx"))),
             ("✂", "Sayfa Kırp", "Alan seçerek kırpın; istediğiniz an kırpmayı kaldırın.", "lemon", lambda: self._welcome_run(self.action_crop_tool)),
@@ -6157,7 +6149,7 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         tk.Label(card, text=version_text, bg=t["lavender"], fg=t["muted"],
                  font=(FONT_UI, 10)).pack(pady=(0, 10))
         libs = (f"PyMuPDF {getattr(fitz, 'VersionBind', '?')}  (AGPL-3.0)\n"
-                "Tesseract OCR  (Apache-2.0)   ·   pyHanko  (MIT)\n"
+                "Tesseract OCR  (Apache-2.0)\n"
                 f"{APP_NAME} AGPL-3.0 ile sunulur; kaynak kodu kurulumla gelir (Yardım ▸ Lisans).\n"
                 "Belgeleriniz bilgisayarınızdan çıkmaz; hiçbir veri gönderilmez.")
         tk.Label(card, text=libs, bg=t["lavender"], fg=t["text"], font=(FONT_UI, 9), justify="center").pack()
@@ -6278,106 +6270,6 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
         ttk.Button(win, text="Yerleştir", command=place).grid(row=5, column=0, padx=10, pady=10)
         ttk.Button(win, text="İptal", command=win.destroy).grid(row=5, column=1, padx=10, pady=10)
 
-    def action_sign_pdf(self):
-        cert_path = filedialog.askopenfilename(title="PKCS#12 sertifikası seçin", filetypes=[("PKCS#12 sertifikası", "*.p12 *.pfx")])
-        if not cert_path:
-            return
-        password = simpledialog.askstring("Sertifika parolası", "Sertifika parolası:", show="*", parent=self)
-        if password is None:
-            return
-        visible = messagebox.askyesno(
-            "İmza görünümü",
-            "İmza, geçerli sayfanın sağ alt köşesinde görünür bir kutu olarak gösterilsin mi?\n"
-            "(Hayır: görünmez imza)", parent=self)
-        base = os.path.splitext(os.path.basename(self.pdf_path))[0]
-        output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
-                                              initialfile=f"{base}_imzali.pdf")
-        if not output:
-            return
-        try:
-            from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-            from pyhanko.sign import signers
-            from pyhanko.sign.fields import SigFieldSpec
-            from pyhanko.sign.signers.pdf_signer import PdfSignatureMetadata
-            from pyhanko.stamp import TextStampStyle
-            page_index = self.get_current_page_index()
-            field_name = f"BabaPDF_Imza_{datetime.now():%Y%m%d%H%M%S}"
-            source_path, is_tmp = self._working_pdf_path()
-            try:
-                signer = signers.SimpleSigner.load_pkcs12(cert_path, passphrase=password.encode())
-                meta = PdfSignatureMetadata(field_name=field_name)
-                if visible:
-                    box_page = self.doc[page_index].mediabox
-                    box = (box_page.x1 - 240, box_page.y0 + 36, box_page.x1 - 30, box_page.y0 + 100)
-                    spec = SigFieldSpec(sig_field_name=field_name, on_page=page_index, box=box)
-                    # Damga yazı tipi Türkçe karakter içermez; metin bilerek ASCII tutulur.
-                    stamp = TextStampStyle(stamp_text="Dijital olarak imzalayan:\n%(signer)s\nTarih: %(ts)s", border_width=1)
-                    pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=stamp, new_field_spec=spec)
-                else:
-                    pdf_signer = signers.PdfSigner(meta, signer=signer,
-                                                   new_field_spec=SigFieldSpec(sig_field_name=field_name, on_page=page_index))
-                with open(source_path, "rb") as source_file:
-                    writer = IncrementalPdfFileWriter(source_file)
-                    with open(output, "wb") as output_file:
-                        pdf_signer.sign_pdf(writer, output=output_file)
-            finally:
-                if is_tmp:
-                    self._remove_quietly(source_path)
-            with fitz.open(output) as signed_doc:
-                if not signed_doc.is_pdf:
-                    raise ValueError("İmzalı çıktı geçerli bir PDF değil.")
-            self._toast(f"PDF dijital olarak imzalandı: {os.path.basename(output)}", output)
-        except Exception as exc:
-            messagebox.showerror("Dijital imza hatası", str(exc), parent=self)
-
-    def action_export_signature_report(self):
-        report = self._get_signature_report()
-        if report is None:
-            return
-        path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Metin", "*.txt")])
-        if path:
-            with open(path, "w", encoding="utf-8") as output:
-                output.write(report)
-            messagebox.showinfo("Rapor kaydedildi", f"İmza raporu kaydedildi:\n{path}", parent=self)
-
-    def _get_signature_report(self):
-        try:
-            from pyhanko.pdf_utils.reader import PdfFileReader
-            from pyhanko.sign.validation import validate_pdf_signature
-            source_path, is_tmp = self._working_pdf_path()
-            try:
-                with open(source_path, "rb") as source_file:
-                    reader = PdfFileReader(source_file)
-                    acroform = reader.root.get("/AcroForm")
-                    fields = acroform.get_object().get("/Fields", []) if acroform else []
-                    signatures = []
-                    for field_ref in fields:
-                        field = field_ref.get_object()
-                        if field.get("/FT") == "/Sig" and field.get("/V"):
-                            signatures.append(field_ref)
-                    if not signatures:
-                        messagebox.showinfo("İmza doğrulama", "PDF içinde dijital imza bulunamadı.", parent=self)
-                        return None
-                    lines = [f"Dosya: {self.pdf_path}", f"Tarih: {datetime.now().isoformat(timespec='seconds')}", ""]
-                    for number, field_ref in enumerate(signatures, 1):
-                        field = field_ref.get_object()
-                        name = str(field.get("/T", "İsimsiz"))
-                        status = validate_pdf_signature(reader, field_ref)
-                        coverage = getattr(getattr(status, "coverage", None), "value", "Bilinmiyor")
-                        lines.extend([f"İmza {number}", f"Alan: {name}", f"Geçerli: {getattr(status, 'bottom_line', 'Bilinmiyor')}", f"Kapsam: {coverage}", ""])
-                    return "\n".join(lines)
-            finally:
-                if is_tmp:
-                    self._remove_quietly(source_path)
-        except Exception as exc:
-            show_runtime_error(self, "Dijital imza doğrulama", exc)
-            return None
-
-    def action_validate_signatures(self):
-        report = self._get_signature_report()
-        if report:
-            messagebox.showinfo("İmza doğrulama raporu", report[:6000], parent=self)
-
     def action_open_error_log(self):
         path = error_log_path()
         if not os.path.exists(path):
@@ -6392,38 +6284,6 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
                 subprocess.run(["xdg-open", path], check=False)
         except Exception as exc:
             show_runtime_error(self, "Hata günlüğü açma", exc)
-
-    def action_prepare_certificate(self):
-        path = filedialog.askopenfilename(title="Sertifika dosyası seçin", filetypes=[("PKCS#12 sertifikası", "*.p12 *.pfx"), ("Tüm dosyalar", "*.*")])
-        if not path:
-            return
-        password = simpledialog.askstring("Sertifika parolası", "Sertifika parolası:", show="*", parent=self)
-        if password is None:
-            return
-        try:
-            from cryptography.hazmat.primitives.serialization import pkcs12
-            with open(path, "rb") as cert_file:
-                certificate = pkcs12.load_key_and_certificates(cert_file.read(), password.encode() if password else None)
-            cert = certificate[1]
-            if not cert:
-                raise ValueError("Sertifika dosyasında ana sertifika bulunamadı.")
-            now = datetime.utcnow()
-            not_after = cert.not_valid_after.replace(tzinfo=None) if hasattr(cert, "not_valid_after") else None
-            not_before = cert.not_valid_before.replace(tzinfo=None) if hasattr(cert, "not_valid_before") else None
-            status = "geçerli"
-            if not_after and now > not_after:
-                status = "SÜRESİ DOLMUŞ"
-            elif not_before and now < not_before:
-                status = "henüz geçerli değil"
-            self_signed = cert.subject == cert.issuer
-            lines = [f"Sahip: {cert.subject.rfc4514_string()}", f"Veren: {cert.issuer.rfc4514_string()}",
-                     f"Geçerlilik: {not_before:%d.%m.%Y} – {not_after:%d.%m.%Y} ({status})" if not_after and not_before else "",
-                     "Özel anahtar: " + ("var" if certificate[0] is not None else "YOK (imzalanamaz)")]
-            if self_signed:
-                lines.append("\nNot: Kendinden imzalı sertifika; Adobe gibi programlar imzayı 'güvenilmeyen' gösterebilir.")
-            messagebox.showinfo("Sertifika kontrolü", "\n".join(line for line in lines if line), parent=self)
-        except Exception as exc:
-            messagebox.showerror("Sertifika hatası", f"PKCS#12 sertifikası okunamadı:\n{exc}", parent=self)
 
     def action_batch_extract(self):
         files = filedialog.askopenfilenames(title="PDF dosyalarını seçin", filetypes=[("PDF", "*.pdf")])
