@@ -7,6 +7,11 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.3 — 28.10.2026
+Düzeltilen
+- Office'e kaydet: döndürülmüş (/Rotate) sayfalar artık doğru okunur; önceden Word çıktısı 1 sayfadan 4'e şişiyor, PowerPoint'te metin kutusu hiç oluşmuyordu. Yatay yazılı içerikte sayfanın dönüklüğü kaldırılır, yan yazılı (görünüşte dik) içerikte sayfa görünen yönüyle yeniden kurulur.
+- PowerPoint: karışık boyutlu sayfalarda her sayfa slayda oranı bozulmadan ortalanarak sığdırılır (önceden yatay sayfa sıkışıyordu).
+
 ## 1.12.2 — 28.10.2026
 Değişen
 - Word (karmaşık/broşür sayfalar): harf büyüklükleri artık özgün boyutta kalır; yazı tipi yerine konunca genişlik farkı, harf boyunu küçültmek yerine her yazı tipi için sayfa düzeyinde tek bir yatay ölçekle (Word «ölçek %») giderilir. Böylece tablo hücreleri ve satırlar arasında boyut tutarsızlığı kalmaz. Tek satırlık yazılar için satır yüksekliği doğal değere yakın tutuldu (Word ile LibreOffice arası dikey kayma azalır); madde imi gibi iri simgeler satır aralığını şişirmez.

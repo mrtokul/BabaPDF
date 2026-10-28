@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.2"
+APP_VERSION = "1.12.3"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -676,6 +676,48 @@ _OF_KNOWN = {"arial", "times new roman", "courier new", "calibri", "calibri ligh
              "book antiqua", "century gothic", "arial narrow", "lucida console", "symbol", "aptos", "arial black"}
 _OF_LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"}
 _OF_BULLET = re.compile(r"^\s*([•▪◦●○■□‣⁃·\-–—*]|\d{1,3}[.)]|[a-zA-Z][.)])\s+")
+
+
+def _of_open(path):
+    """PDF'yi açar. /Rotate'lu sayfaları okunur yöne getirir: metin içerik uzayında yataysa sayfanın
+    dönüklüğü kaldırılır (hiçbir içerik kaybolmaz); metin dikeyse (görünüşte dik duran yan yazı)
+    görünen yönüyle yeniden kurulur ve sözcük sayısı korunmuyorsa dönüklük yine kaldırılır.
+    Böylece tüm dışa aktarıcılar tek bir tutarlı koordinat uzayında çalışır."""
+    doc = fitz.open(path)
+    rotated = [p.number for p in doc if p.rotation]
+    if not rotated:
+        return doc
+    side = []
+    for n in rotated:
+        p = doc[n]
+        horizontal = vertical = 0
+        for b in p.get_text("dict")["blocks"]:
+            for ln in b.get("lines", []) if b.get("type") == 0 else []:
+                c = sum(len(s["text"]) for s in ln["spans"])
+                if abs(ln["dir"][0]) >= 0.7:
+                    horizontal += c
+                else:
+                    vertical += c
+        if vertical > horizontal:
+            side.append(n)
+    baked = {}
+    if side:
+        for n in side:
+            p = doc[n]
+            mb = p.mediabox
+            s = min(p.rect.width / mb.width, p.rect.height / mb.height)
+            tmp = fitz.open()
+            q = tmp.new_page(width=p.rect.width * s, height=p.rect.height * s)
+            q.show_pdf_page(q.rect, doc, n, rotate=-p.rotation)
+            if len(q.get_text().split()) >= 0.97 * len(p.get_text().split()):
+                baked[n] = (tmp, q.rect)
+    for n in rotated:
+        if n not in baked:
+            doc[n].set_rotation(0)
+    for n, (tmp, _rect) in baked.items():     # yalnız yan yazılı sayfalar yerinde değiştirilir
+        doc.insert_pdf(tmp, from_page=0, to_page=0, start_at=n + 1)
+        doc.delete_page(n)
+    return doc
 
 
 def office_font_name(raw):
@@ -1713,7 +1755,7 @@ class PDFProcessor:
                 para._p.get_or_add_pPr().insert(0, fr)
             return True
 
-        with fitz.open(pdf_path) as doc:
+        with _of_open(pdf_path) as doc:
             total = len(doc)
             normal = out.styles["Normal"]
             normal.paragraph_format.space_after = Pt(0)
@@ -1784,7 +1826,7 @@ class PDFProcessor:
         thin = Side(style="thin", color="999999")
         tables_found = 0
         last = None  # önceki tablo: devam kontrolü için
-        with fitz.open(pdf_path) as doc:
+        with _of_open(pdf_path) as doc:
             total = len(doc)
             for number, page in enumerate(doc, 1):
                 hlines, fills = _of_marks(page)
@@ -1898,7 +1940,7 @@ class PDFProcessor:
         from pptx.util import Emu, Pt
         prs = Presentation()
         alignments = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT, "justify": PP_ALIGN.LEFT}
-        with fitz.open(pdf_path) as doc:
+        with _of_open(pdf_path) as doc:
             first = doc[0].rect
             prs.slide_width = Emu(12192000)
             prs.slide_height = Emu(int(12192000 * first.height / first.width))
@@ -1907,17 +1949,19 @@ class PDFProcessor:
             for number, page in enumerate(doc, 1):
                 slide = prs.slides.add_slide(blank)
                 rect = page.rect
-                emu = prs.slide_width / rect.width  # nokta başına EMU
-                font_scale = 960.0 / rect.width     # slayt 960 pt genişliğinde
+                emu = min(prs.slide_width / rect.width, prs.slide_height / rect.height)  # nokta başına EMU (sığdır)
+                font_scale = emu / 12700.0
+                ox = int((prs.slide_width - rect.width * emu) / 2)
+                oy = int((prs.slide_height - rect.height * emu) / 2)
                 hlines, _fills = _of_marks(page)
                 blocks = _of_page_blocks(page, hlines)
                 text = PDFProcessor._clean_text(page.get_text("text"))
                 background = _of_background(doc, number - 1, blocks, 170) if editable and blocks else None
                 if background is None:
-                    slide.shapes.add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), 0, 0,
-                                             prs.slide_width, prs.slide_height)
+                    slide.shapes.add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), ox, oy,
+                                             int(rect.width * emu), int(rect.height * emu))
                 else:
-                    slide.shapes.add_picture(io.BytesIO(background), 0, 0, prs.slide_width, int(rect.height * emu))
+                    slide.shapes.add_picture(io.BytesIO(background), ox, oy, int(rect.width * emu), int(rect.height * emu))
                     for info in blocks:
                         x0, y0, x1, y1 = info["bbox"]
                         align = _of_block_align(info)
@@ -1926,7 +1970,7 @@ class PDFProcessor:
                         lead = max(pitch - line_h, 0.0)
                         slack = 0.08 * (x1 - x0) + 4
                         bx = {"left": x0, "justify": x0, "center": x0 - slack / 2, "right": x0 - slack}[align]
-                        box = slide.shapes.add_textbox(Emu(int(bx * emu)), Emu(int((y0 - lead * 0.8) * emu)),
+                        box = slide.shapes.add_textbox(Emu(ox + int(bx * emu)), Emu(oy + int((y0 - lead * 0.8) * emu)),
                                                        Emu(int((x1 - x0 + slack) * emu)), Emu(int((y1 - y0 + lead) * emu)))
                         frame = box.text_frame
                         frame.word_wrap = True

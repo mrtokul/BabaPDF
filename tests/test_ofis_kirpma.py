@@ -213,3 +213,37 @@ def test_word_karmasik_sayfa_sabit_konumlu(tmp_path):
     assert "w:framePr" in xml and "behindDoc" in xml
     with pymupdf.open(src) as d:
         assert len(d) == 1
+
+
+def test_donuk_sayfa_okunur_yonde_aktarilir(rapor_pdf, tmp_path):
+    """/Rotate'lu sayfa: metin kaybolmaz, Word çıktısı sayfa sayısını şişirmez, PowerPoint metin kutuları üretir."""
+    from docx import Document
+    from pptx import Presentation
+    doc = pymupdf.open(rapor_pdf)
+    doc[0].set_rotation(90)
+    yol = str(tmp_path / "d.pdf")
+    doc.save(yol)
+    out = str(tmp_path / "d.docx")
+    P.export_docx(yol, out)
+    metin = " ".join(p.text for p in Document(out).paragraphs) + " ".join(
+        c.text for t in Document(out).tables for r in t.rows for c in r.cells)
+    assert "Rapor" in metin and "Birinci" in metin
+    pp = str(tmp_path / "d.pptx")
+    P.export_pptx(yol, pp)
+    assert any(s.has_text_frame and "Rapor" in s.text_frame.text for s in Presentation(pp).slides[0].shapes)
+
+
+def test_powerpoint_karisik_boyutlu_sayfalar_slayda_sigar(tmp_path):
+    from pptx import Presentation
+    doc = pymupdf.open()
+    doc.new_page(width=595, height=842).insert_text((72, 100), "Dikey", fontsize=14)
+    doc.new_page(width=1190, height=842).insert_text((72, 100), "Yatay", fontsize=14)
+    yol = str(tmp_path / "k.pdf")
+    doc.save(yol)
+    pp = str(tmp_path / "k.pptx")
+    P.export_pptx(yol, pp)
+    prs = Presentation(pp)
+    for slide in prs.slides:
+        for s in slide.shapes:
+            assert s.left >= 0 and s.top >= 0
+            assert s.left + s.width <= prs.slide_width + 10 and s.top + s.height <= prs.slide_height + 10
