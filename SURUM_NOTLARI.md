@@ -7,6 +7,21 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.10 — 28.10.2026
+Düzeltilen
+- Satır genişliği ölçümü (1.12.9) Windows dışı ortamlarda ve testlerde gömülü Helvetica ile yapılıyordu; bu yazı tipinde ş, ğ, ı gibi Türkçe harflerin genişliği 0 sayıldığından satırlar %20–30 fazla genişletiliyordu. Windows yazı tipi yoksa artık ölçü uyumlu Liberation yazı tipleri kullanılır. Windows'ta davranış değişmedi (gerçek Arial/Times/Courier).
+Ölçüm (LibreOffice, A3 ABB kılavuzu, özgün PDF ile sözcük konumu farkı ≤ 3 pt): sayfa 1'de sözcüklerin %40 → %90'ı, sayfa 2'de %84 → %96'sı; ortalama yatay sapma 5,3 / 2,4 pt → 1,1 / 1,1 pt.
+
+## 1.12.9 — 28.10.2026
+Düzeltilen (PDF → Word, sabit konumlu sayfa; gerçek Word'de A3 ABB kılavuzu ile ölçüldü)
+- Her satırın genişliği Word'de yerine konan yazı tipinin gerçek ölçüsüne (Arial TTF) göre PDF'teki genişliğe eşitlenir (satır başına yatay ölçek); önceki yazı tipi başına tek ölçek yerine.
+- Numaralı/maddeli listelerde ikinci ve sonraki satırlar birinci satırdan içerideydi, Word hepsini sola yaslıyordu (≈12 pt kayma): asılı girinti uygulanır; satır başlangıçları karışıksa satır başına paragraf.
+- Asılı girintili madde «ortalı» sanılıyor ve kutu yanlış yere konuyordu (bir madde Word'de kayboluyordu).
+- Taban çizgisi aralığı düzensiz bloklar (logo çizgisi + küçük başlık + başlık) ve iri gösterge rakamı + küçük etiket ayrı kutulara bölünür (üstü kesiliyor ve 4–7 pt aşağı kayıyordu); üst üste binen yazı (rakam üstü ondalık nokta) ayrı blok olur.
+- Sabit genişlikli yazı tipinde baştaki boşlukla hizalanmış etiketler gerçek yazının başına konur.
+- Altı çizili tespiti sıkılaştırıldı (LCD çerçeve çizgisi altı çizgi sanılıyordu).
+Ölçüm (özgün PDF ile Word'den geri çevrilen PDF, sözcük merkezi farkı): sayfa 1'de 3 pt içinde sözcük 704 → 1608 / 1760, sayfa 2'de 1154 → 1339 / 1383; ortalama düşey fark 0,36 → 0,07 pt.
+
 ## 1.12.8 — 28.10.2026
 Düzeltilen
 - Word dosyası açılırken çıkabilecek uyarılar giderildi: «Uyumluluk Modu» (Word 2010 kipi) yerine Word 2013+ kipi; belge özellikleri şablondan kalan «python-docx», 2013 tarihi ve şablon önizleme resmi yerine «Baba PDF» ve gerçek tarih; tablo ve hücre özellikleri şema sırasında yazılır (sırası bozuk öğe Word'de «okunamayan içerik» onarımına yol açabilir).

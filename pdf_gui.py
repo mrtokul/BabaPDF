@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.8"
+APP_VERSION = "1.12.10"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -744,6 +744,46 @@ def office_font_name(raw):
     return "Arial"  # bilgisayarda bulunmayabilecek özel yazı tipi: benzer genişlikte yaygın yazı tipi
 
 
+_OF_TTF = {"arial": "arial", "times new roman": "times", "courier new": "cour", "calibri": "calibri", "cambria": "cambria",
+           "verdana": "verdana", "tahoma": "tahoma", "georgia": "georgia", "segoe ui": "segoeui", "consolas": "consola"}
+_OF_FONT_CACHE = {}
+
+
+def _of_run_width(text, st):
+    """Metnin Word'de yerine konan yazı tipiyle (gerçek TTF varsa o, yoksa PDF'in yerleşik eşi) genişliği, punto."""
+    key = (st["font"].lower(), bool(st["bold"]), bool(st["italic"]))
+    font = _OF_FONT_CACHE.get(key)
+    if font is None:
+        font = False
+        stem = _OF_TTF.get(key[0])
+        if stem:
+            suffix = ("bi" if key[1] and key[2] else "b" if key[1] else "i" if key[2] else "")
+            names = {"arial": {"": "arial", "b": "arialbd", "i": "ariali", "bi": "arialbi"},
+                     "times": {"": "times", "b": "timesbd", "i": "timesi", "bi": "timesbi"},
+                     "cour": {"": "cour", "b": "courbd", "i": "couri", "bi": "courbi"}}.get(stem)
+            fname = (names[suffix] if names else stem + suffix) + ".ttf"
+            path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", fname)
+            if not os.path.exists(path):  # Windows dışı: ölçü uyumlu Liberation yazı tipleri (Türkçe harfleri içerir)
+                family = {"arial": "Sans", "times": "Serif", "cour": "Mono"}.get(stem)
+                style = {"": "Regular", "b": "Bold", "i": "Italic", "bi": "BoldItalic"}[suffix]
+                for folder in ("/usr/share/fonts/truetype/liberation", "/usr/share/fonts/liberation",
+                               "/usr/share/fonts/truetype/liberation2"):
+                    cand = os.path.join(folder, f"Liberation{family}-{style}.ttf") if family else ""
+                    if cand and os.path.exists(cand):
+                        path = cand
+                        break
+            if os.path.exists(path):
+                try:
+                    font = fitz.Font(fontfile=path)
+                except Exception:  # noqa: BLE001
+                    font = False
+        _OF_FONT_CACHE[key] = font
+    if font:
+        return font.text_length(text, fontsize=st["size"])
+    base = "cour" if "courier" in key[0] else "tiro" if "times" in key[0] else "helv"
+    return fitz.get_text_length(text, fontname=base, fontsize=st["size"])
+
+
 def _of_font_known(raw):
     """Yazı tipi Office'te gerçek adıyla bulunuyorsa (Arial, Times, Calibri...) True; özel yazı tipi yedeğe düşer."""
     base = re.sub(r"^[A-Z]{6}\+", "", raw or "").strip()
@@ -821,8 +861,8 @@ def _of_span(span, hlines):
     width = max(x1 - x0, 1.0)
     underline = strike = False
     for lx0, lx1, ly in hlines:
-        if lx0 >= x0 - 4 and lx1 <= x1 + 4 and (lx1 - lx0) >= 0.8 * width:
-            if base + 0.4 <= ly <= base + 0.28 * size + 1.5:
+        if lx0 >= x0 - 4 and lx1 <= x1 + 4 and 0.8 * width <= (lx1 - lx0) <= 1.4 * width:
+            if base + 0.4 <= ly <= base + 0.18 * size + 1.0:
                 underline = True
             elif base - 0.5 * size - 1.5 <= ly <= base - 0.2 * size + 1.5:
                 strike = True
@@ -879,8 +919,31 @@ def _of_bulletish(text):
 def _of_block_infos(block, hlines):
     """Bloğu bilgi sözlüklerine çevirir: madde imi + metin aynı satırda birleşir; aynı satırdaki ayrı sütun parçaları
     (tablo benzeri) ayrı bloklar olur; madde imiyle başlayan her satır ayrı paragraf olur."""
+    def split_sizes(line):
+        """Aynı PDF satırındaki iri yazı (ör. gösterge rakamı, 20 pt) ile küçük etiketi (6 pt) ayırır: tek satır
+        aralığına sığmazlar. Üst simge ve madde imi (boyut oranı küçük) ayrılmaz."""
+        groups = []
+        for sp in line.get("spans", ()):
+            text = sp.get("text", "")
+            if groups and text.strip():
+                ref = max((s.get("size", 10.0) for s in groups[-1] if s.get("text", "").strip()), default=None)
+                big, small = (max(ref, sp.get("size", 10.0)), min(ref, sp.get("size", 10.0))) if ref else (0, 1)
+                if ref and big >= 12 and big > 2.2 * small and not _of_bulletish(_of_text(text)) \
+                        and not _of_bulletish(_of_text("".join(s["text"] for s in groups[-1]))):
+                    groups.append([sp])
+                    continue
+            if groups:
+                groups[-1].append(sp)
+            else:
+                groups.append([sp])
+        if len(groups) < 2:
+            return [line]
+        return [dict(line, spans=g, bbox=(min(s["bbox"][0] for s in g), min(s["bbox"][1] for s in g),
+                                          max(s["bbox"][2] for s in g), max(s["bbox"][3] for s in g))) for g in groups]
+
     rows = []
-    for line in sorted(block.get("lines", ()), key=lambda ln: (ln["bbox"][1], ln["bbox"][0])):
+    for line in sorted((sub for ln0 in block.get("lines", ()) for sub in split_sizes(ln0)),
+                       key=lambda ln: (ln["bbox"][1], ln["bbox"][0])):
         if not any(sp.get("text", "").strip() for sp in line.get("spans", ())):
             continue
         for row in rows:
@@ -889,8 +952,16 @@ def _of_block_infos(block, hlines):
                 first, second = (row, line) if row["bbox"][0] <= line["bbox"][0] else (line, row)
                 gap = second["bbox"][0] - first["bbox"][2]
                 size = max((sp.get("size", 10.0) for sp in first["spans"]), default=10.0)
-                if not (_of_bulletish(_of_text("".join(sp["text"] for sp in first["spans"]))) or gap < 1.0 * size):
+                size2 = max((sp.get("size", 10.0) for sp in second["spans"]), default=10.0)
+                bullet = _of_bulletish(_of_text("".join(sp["text"] for sp in first["spans"])))
+                if not (bullet or gap < 1.0 * size):
                     continue  # ayrı sütun parçası: birleştirme
+                w1, w2 = first["bbox"][2] - first["bbox"][0], second["bbox"][2] - second["bbox"][0]
+                if not bullet and gap < -0.4 * min(w1, w2) and min(w1, w2) > 1:
+                    continue  # üst üste binen yazı (ör. rakamın üstüne çizilen ondalık nokta): ayrı blok, konumu korunur
+                if max(size, size2) >= 12 and max(size, size2) > 2.2 * min(size, size2) and not (bullet and not any(
+                        ch.isdigit() for sp in first["spans"] for ch in sp["text"])):
+                    continue  # iri sayı (ör. gösterge «00.») + küçük etiket: taban çizgileri ayrı, ayrı blok olsun
                 spans = list(first["spans"])
                 if gap > 1.0 and spans and not spans[-1]["text"].endswith(" "):
                     spans.append(dict(spans[-1], text=" "))
@@ -1272,6 +1343,76 @@ def _of_page_blocks(page, hlines):
     return blocks
 
 
+def _of_split_irregular(info, tol=1.2):
+    """Taban çizgisi aralıkları düzensiz bloğu (ör. büyük çizgi + küçük başlık + başlık) düzgün aralıklı parçalara böler:
+    tek paragrafta tek satır aralığı olur, düzensiz aralık Word'de kayar."""
+    lines = info["lines"]
+    if len(lines) < 2:
+        return [info]
+
+    def dominant(ln):
+        weight = {}
+        for t, s in ln["spans"]:
+            weight[s["size"]] = weight.get(s["size"], 0) + len(t.strip())
+        return max(weight, key=weight.get) if weight and max(weight.values()) else 1.0
+
+    gaps = [lines[i + 1]["base"] - lines[i]["base"] for i in range(len(lines) - 1)]
+    size_jump = [max(dominant(lines[i]), dominant(lines[i + 1])) > 1.3 * min(dominant(lines[i]), dominant(lines[i + 1]))
+                 for i in range(len(lines) - 1)]  # iri sayı + küçük etiket aynı satır aralığına sığmaz (üstü kesilir)
+    if not any(size_jump) and (len(lines) < 3 or max(abs(g - info["pitch"]) for g in gaps) <= tol):
+        return [info]
+    runs, cur, last_gap = [], [lines[0]], None
+    for i, ln in enumerate(lines[1:]):
+        gap = gaps[i]
+        if size_jump[i]:
+            runs.append(cur)
+            cur, last_gap = [ln], None
+        elif last_gap is None or abs(gap - last_gap) <= tol:
+            cur.append(ln)
+            last_gap = gap if last_gap is None else last_gap
+        else:
+            runs.append(cur)
+            cur, last_gap = [ln], None
+    runs.append(cur)
+    parts = []
+    for run in runs:
+        weight = {}
+        for ln in run:
+            for t, s in ln["spans"]:
+                weight[s["size"]] = weight.get(s["size"], 0) + len(t.strip())
+        size = max(weight, key=weight.get) if weight else info["size"]
+        pitch = (sorted(run[i + 1]["base"] - run[i]["base"] for i in range(len(run) - 1))[(len(run) - 1) // 2]
+                 if len(run) > 1 else max(run[0]["bbox"][3] - run[0]["bbox"][1], size * 1.15))
+        bbox = (min(ln["bbox"][0] for ln in run), min(ln["bbox"][1] for ln in run),
+                max(ln["bbox"][2] for ln in run), max(ln["bbox"][3] for ln in run))
+        widths = [ln["bbox"][2] - ln["bbox"][0] for ln in run]
+        parts.append(dict(info, lines=run, pitch=pitch, size=size, bbox=bbox, base0=run[0]["base"], longest=max(widths),
+                          justified=info["justified"] and len(run) >= 3))
+    return parts
+
+
+def _of_trim_lead(info):
+    """Tek satırlı, sabit genişlikli yazı tipindeki satırın başındaki boşlukları atıp kutuyu gerçek yazının başına
+    kaydırır (PDF'te boşlukla hizalanmış etiketler, Word'de yazı tipi/ölçek farkıyla kayar)."""
+    if len(info["lines"]) != 1:
+        return info
+    line = info["lines"][0]
+    text = "".join(t for t, _s in line["spans"])
+    lead = len(text) - len(text.lstrip(" "))
+    first = next((s for t, s in line["spans"] if t.strip()), None)
+    if lead < 2 or first is None or not any(k in first["font"].lower() for k in ("lucida", "courier", "consolas")):
+        return info
+    x0, y0, x1, y1 = line["bbox"]
+    nx0 = x1 - (x1 - x0) * (len(text) - lead) / len(text)
+    spans, left = [], lead
+    for t, s in line["spans"]:
+        cut = min(left, len(t) - len(t.lstrip(" ")))
+        left -= cut
+        spans.append((t[cut:], s))
+    line = dict(line, spans=spans, bbox=(nx0, y0, x1, y1))
+    return dict(info, lines=[line], bbox=(nx0, info["bbox"][1], info["bbox"][2], info["bbox"][3]))
+
+
 def _of_background(doc, index, blocks, dpi=150):
     """Sayfanın yazısı çıkarılmış görünümü (çizgiler, şekiller, resimler kalır) PNG olarak; olmazsa None.
     Yazı silme (redaction) saydamlık maskeli resimleri bozduğundan (kararır), silinmiş görüntü yalnızca yazı
@@ -1323,6 +1464,9 @@ def _of_block_align(info):
     x0s = [ln["bbox"][0] for ln in lines]
     x1s = [ln["bbox"][2] for ln in lines]
     mids = [(a + b) / 2 for a, b in zip(x0s, x1s)]
+    first_text = "".join(t for t, _s in lines[0]["spans"])
+    if _OF_BULLET.match(first_text) and x0s[0] < min(x0s[1:]) - 3:
+        return "left"  # asılı girintili madde: satır kenarları tesadüfen ortalı görünür
     if max(x0s) - min(x0s) > 3:
         if max(x1s) - min(x1s) < 2:
             return "right"
@@ -1761,7 +1905,7 @@ class PDFProcessor:
             anchor.append(deepcopy(inline.find(qn("a:graphic"))))
             inline.getparent().remove(inline)
             del sp, ns
-            for info in blocks:
+            for info in [_of_trim_lead(part) for blk in blocks for part in _of_split_irregular(blk)]:
                 x0, y0, x1, y1 = info["bbox"]
                 align = _of_block_align(info)
                 line_h = max(info["lines"][0]["bbox"][3] - info["lines"][0]["bbox"][1], 1.0)
@@ -1777,14 +1921,38 @@ class PDFProcessor:
                 para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
                 para.paragraph_format.line_spacing = Pt(pitch)
                 last_run = None
+                paras = [para]
+                hang = ([ln["bbox"][0] - x0 for ln in info["lines"]] if align in ("left", "justify") else [0.0] * len(info["lines"]))
+                rest_x = hang[1:]
+                split_lines = bool(rest_x) and max(rest_x) - min(rest_x) > 1.5 and max(hang) > 1.5  # girintileri farklı satırlar
+                if rest_x and not split_lines and (max(rest_x) > 1.5 or hang[0] > 1.5):  # asılı girinti (numaralı/maddeli liste)
+                    para.paragraph_format.left_indent = Pt(max(rest_x[0], 0.0))
+                    para.paragraph_format.first_line_indent = Pt(hang[0] - rest_x[0])
+                elif not rest_x and hang[0] > 1.5:
+                    para.paragraph_format.left_indent = Pt(hang[0])
                 for li, line in enumerate(info["lines"]):  # satır sonları aynen korunur: sayfa düzeni kaymaz
-                    if li and last_run is not None:
+                    if li and split_lines:  # her satırın başlangıcı farklıysa satır başına paragraf (konum birebir)
+                        para = out.add_paragraph()
+                        para.paragraph_format.alignment = alignments["left" if align == "justify" else align]
+                        para.paragraph_format.space_before = para.paragraph_format.space_after = Pt(0)
+                        para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+                        para.paragraph_format.line_spacing = Pt(pitch)
+                        para.paragraph_format.left_indent = Pt(max(hang[li], 0.0))
+                        paras.append(para)
+                        last_run = None
+                    elif li and last_run is not None:
                         last_run.add_break()  # satır sonu, önceki yazının boyutunda (varsayılan boyut satırı büyütmesin)
+                    if li == 0 and split_lines:
+                        para.paragraph_format.left_indent = Pt(max(hang[0], 0.0))
                     sizes = [s["size"] for t, s in line["spans"] if t.strip() and len(t.strip()) > 1] or [info["size"]]
+                    want = line["bbox"][2] - line["bbox"][0]  # birebir: satırın Word'deki genişliği PDF'inkine eşitlenir
+                    have = sum(_of_run_width(t, s) for t, s in line["spans"] if t)
+                    fit = int(max(60, min(140, round(100.0 * want / have)))) if have > 0 and want > 0 else 100
                     for text, st in line["spans"]:
                         if text:
                             if len(text.strip()) <= 1 and st["size"] > max(sizes):
                                 st = dict(st, size=max(sizes))  # madde imi satırı büyütmesin
+                            st = dict(st, scale=fit if abs(fit - 100) > 1 else 100)
                             last_run = para.add_run(text)
                             style_run(last_run, st)
                 top = info.get("base0", y0 + line_h * 0.8) - K_BASE * pitch
@@ -1808,7 +1976,9 @@ class PDFProcessor:
                     % (nsdecls("w", "wp", "a"), 251658240 + tb_id[0], int(bx * 12700), int(top * 12700),
                        int(width * 12700), int(height * 12700), 100000 + tb_id[0], tb_id[0],
                        int(width * 12700), int(height * 12700)))
-                box.find(".//" + qn("w:txbxContent")).append(para._p)  # paragraf gövdeden kutuya taşınır
+                content = box.find(".//" + qn("w:txbxContent"))
+                for p_el in paras:
+                    content.append(p_el._p)  # paragraflar gövdeden kutuya taşınır
                 par._p.append(box)
             return True
 

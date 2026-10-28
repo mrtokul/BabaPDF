@@ -338,3 +338,50 @@ def test_word_dosyasi_acilista_uyari_cikarmaz(rapor_pdf, tmp_path):
     assert re.search(r'compatibilityMode"[^>]*w:val="15"', z.read("word/settings.xml").decode("utf-8"))
     assert not any(n.endswith("thumbnail.jpeg") for n in z.namelist())
     assert "python-docx" not in z.read("docProps/core.xml").decode("utf-8")
+
+
+def _satir(metin, x0, taban, boyut, font="Arial"):
+    st = {"font": font, "size": boyut, "bold": False, "italic": False, "color": 0, "underline": False, "strike": False,
+          "sup": False, "raw": font}
+    return {"bbox": (x0, taban - boyut, x0 + len(metin) * boyut * 0.5, taban + 2), "spans": [(metin, st)], "base": taban}
+
+
+def _blok(satirlar, pitch=8.0, size=7.0):
+    return {"lines": satirlar, "pitch": pitch, "size": size, "longest": 100.0, "justified": False,
+            "bbox": (min(s["bbox"][0] for s in satirlar), satirlar[0]["bbox"][1], 200.0, satirlar[-1]["bbox"][3]),
+            "base0": satirlar[0]["base"], "samples": []}
+
+
+def test_asili_girintili_madde_ortalanmis_sayilmaz():
+    # birinci satır (madde imi) ikincisinden solda, satır ortaları tesadüfen çakışır: «center» değil «left»
+    blok = _blok([_satir("1. Kurulum yüzeyi olabilir", 50, 100, 7), _satir("destekleyebilecek kadar", 62, 108, 7)])
+    ln = blok["lines"]
+    ln[0]["bbox"] = (50, 93, 150, 102)
+    ln[1]["bbox"] = (62, 101, 138, 110)
+    assert g._of_block_align(blok) == "left"
+
+
+def test_duzensiz_taban_cizgisi_ve_iri_etiket_ayri_kutuya_bolunur():
+    # çizgi (14 pt) + küçük başlık (6 pt) + başlık (13 pt): tek satır aralığına sığmaz
+    blok = _blok([_satir("—", 15, 44, 14), _satir("ABB MICRO", 15, 55, 6), _satir("ACS150 sürücüleri", 12, 72, 13)],
+                 pitch=14.0, size=13.0)
+    parcalar = g._of_split_irregular(blok)
+    assert len(parcalar) >= 2 and sum(len(p["lines"]) for p in parcalar) == 3
+    # iri gösterge rakamı ile küçük etiket aynı blokta kalmaz (Word'de üst kesilirdi)
+    blok2 = _blok([_satir("9902", 770, 718, 20, "Lucida Console"), _satir("PAR", 800, 725, 6, "Lucida Console")], pitch=7.0, size=20.0)
+    assert len(g._of_split_irregular(blok2)) == 2
+
+
+def test_sabit_genislikli_etiketin_bas_bosluklari_atilir():
+    blok = _blok([_satir("     Hz", 800, 668, 6, "Lucida Console")], pitch=6.9, size=6.0)
+    blok["lines"][0]["bbox"] = (800.0, 663.5, 825.2, 669.5)
+    yeni = g._of_trim_lead(blok)
+    assert yeni["lines"][0]["spans"][0][0] == "Hz"
+    assert yeni["bbox"][0] > 815  # kutu gerçek yazının başına kaydı
+    ayni = g._of_trim_lead(_blok([_satir("     Hz", 800, 668, 6, "Arial")]))
+    assert ayni["lines"][0]["spans"][0][0] == "     Hz"  # orantılı yazı tipinde dokunulmaz
+
+
+def test_satir_genisligi_yedek_yazi_tipine_gore_olculur():
+    st = {"font": "Arial", "size": 10.0, "bold": False, "italic": False}
+    assert g._of_run_width("Merhaba dünya", st) > g._of_run_width("Merhaba", st) > 0
