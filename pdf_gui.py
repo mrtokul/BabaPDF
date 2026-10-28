@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.10"
+APP_VERSION = "1.12.12"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -967,6 +967,8 @@ def _of_block_infos(block, hlines):
                     spans.append(dict(spans[-1], text=" "))
                 spans += list(second["spans"])
                 row["spans"] = spans
+                if bullet:
+                    row["tab"] = second["bbox"][0]  # madde imi ile yazı arasındaki PDF boşluğu Word'de sekmeyle kurulur
                 row["bbox"] = (first["bbox"][0], min(row["bbox"][1], line["bbox"][1]),
                                max(row["bbox"][2], line["bbox"][2]), max(row["bbox"][3], line["bbox"][3]))
                 break
@@ -1018,7 +1020,11 @@ def _of_block_info1(block, hlines):
         raw = [sp for sp in line.get("spans", ()) if sp.get("text", "").strip()]
         main = max(raw, key=lambda sp: len(sp["text"].strip())) if raw else None
         base = main["origin"][1] if main and "origin" in main else line["bbox"][3]
-        lines.append({"bbox": line["bbox"], "spans": spans, "base": base})
+        tab = line.get("tab")
+        if tab is None and len(raw) >= 2 and ((len(raw[0]["text"].strip()) == 1 and not raw[0]["text"].strip().isalnum())
+                                              or _of_bulletish(_of_text(raw[0]["text"]))):
+            tab = raw[1]["bbox"][0]  # satır içi madde imi: yazının başlangıcı
+        lines.append({"bbox": line["bbox"], "spans": spans, "base": base, "tab": tab})
     if not lines:
         return None
     pitch = None
@@ -1704,6 +1710,17 @@ class PDFProcessor:
 
         def style_run(run, st):
             run.font.name = st["font"]
+            if st.get("spc"):  # harf aralığı (1/20 pt): w:spacing, w:w'den önce gelir
+                rpr1 = run._element.get_or_add_rPr()
+                sp = OxmlElement("w:spacing")
+                sp.set(qn("w:val"), str(int(st["spc"])))
+                after1 = [qn(t) for t in ("w:w", "w:kern", "w:position", "w:sz", "w:szCs", "w:highlight", "w:u", "w:effect",
+                                          "w:bdr", "w:shd", "w:fitText", "w:vertAlign", "w:rtl", "w:cs", "w:em", "w:lang")]
+                nxt1 = next((c for c in rpr1 if c.tag in after1), None)
+                if nxt1 is not None:
+                    nxt1.addprevious(sp)
+                else:
+                    rpr1.append(sp)
             if st.get("scale", 100) != 100:  # yatay ölçek (%): harf yüksekliği aynı, genişlik yerine konan yazı tipine uyar
                 rpr0 = run._element.get_or_add_rPr()
                 w = OxmlElement("w:w")
@@ -1908,6 +1925,8 @@ class PDFProcessor:
             for info in [_of_trim_lead(part) for blk in blocks for part in _of_split_irregular(blk)]:
                 x0, y0, x1, y1 = info["bbox"]
                 align = _of_block_align(info)
+                if align in ("center", "right"):  # wrap="none" kutuda Word ortalı/sağa yaslı metni çok geniş satıra göre hizalar (~370 pt kayar): satır başı girintiyle sola yaslı kur
+                    align = "left"
                 line_h = max(info["lines"][0]["bbox"][3] - info["lines"][0]["bbox"][1], 1.0)
                 pitch = max(info["pitch"], info["size"] * 1.05) if len(info["lines"]) > 1 else info["size"] * 1.2
                 slack = 0.15 * (x1 - x0) + 10
@@ -1945,14 +1964,33 @@ class PDFProcessor:
                     if li == 0 and split_lines:
                         para.paragraph_format.left_indent = Pt(max(hang[0], 0.0))
                     sizes = [s["size"] for t, s in line["spans"] if t.strip() and len(t.strip()) > 1] or [info["size"]]
-                    want = line["bbox"][2] - line["bbox"][0]  # birebir: satırın Word'deki genişliği PDF'inkine eşitlenir
-                    have = sum(_of_run_width(t, s) for t, s in line["spans"] if t)
+                    line_spans = line["spans"]
+                    tab_run = None
+                    tab_x = line.get("tab")
+                    if tab_x and tab_x - x0 > 1.0 and len(line_spans) >= 2 and (len(line_spans[0][0].strip()) <= 1
+                                                                    or _of_bulletish(_of_text(line_spans[0][0]))):
+                        rest = list(line_spans[1:])  # madde imi + sekme + yazı: yazının başlangıcı PDF'tekiyle aynı
+                        while rest and not rest[0][0].strip():
+                            rest.pop(0)
+                        if rest:
+                            rest[0] = (rest[0][0].lstrip(), rest[0][1])
+                            tab_run = (line_spans[0][0].rstrip(), line_spans[0][1])
+                            para.paragraph_format.tab_stops.add_tab_stop(Pt(tab_x - x0))
+                            line_spans = rest
+                    want = line["bbox"][2] - (tab_x if tab_run else line["bbox"][0])  # birebir: satırın Word'deki genişliği PDF'inkine eşitlenir
+                    have = sum(_of_run_width(t, s) for t, s in line_spans if t)
                     fit = int(max(60, min(140, round(100.0 * want / have)))) if have > 0 and want > 0 else 100
-                    for text, st in line["spans"]:
+                    nchars = sum(len(t) for t, _s in line_spans if t)
+                    # tam sayı yüzde ölçeğin bıraktığı küçük genişlik farkı, harf aralığıyla (1/20 pt) kapatılır
+                    spc = max(-40, min(40, int(round(20.0 * (want - have * fit / 100.0) / nchars)))) if nchars and have > 0 else 0
+                    if tab_run:
+                        last_run = para.add_run(tab_run[0] + "\t")
+                        style_run(last_run, dict(tab_run[1], scale=100, size=min(tab_run[1]["size"], max(sizes))))
+                    for text, st in line_spans:
                         if text:
                             if len(text.strip()) <= 1 and st["size"] > max(sizes):
                                 st = dict(st, size=max(sizes))  # madde imi satırı büyütmesin
-                            st = dict(st, scale=fit if abs(fit - 100) > 1 else 100)
+                            st = dict(st, scale=fit if fit != 100 else 100, spc=spc)
                             last_run = para.add_run(text)
                             style_run(last_run, st)
                 top = info.get("base0", y0 + line_h * 0.8) - K_BASE * pitch
@@ -1982,7 +2020,7 @@ class PDFProcessor:
                 par._p.append(box)
             return True
 
-        body_marks, page_links = [], []
+        body_marks, page_links, pos_margins = [], [], []
         with _of_open(pdf_path) as doc:
             total = len(doc)
             normal = out.styles["Normal"]
@@ -2016,8 +2054,7 @@ class PDFProcessor:
                 else:
                     items, (ml, mr, mt, mb), hlines, fills = _of_page_items(doc, page)
                     if layout != "flow" and _of_is_complex(_of_columns(items, ml, rect.width - mr)) and add_positioned(doc, page, rect, hlines, number):
-                        section.left_margin, section.right_margin = Pt(min(max(ml, 14.0), 36.0)), Pt(min(max(mr, 14.0), 36.0))
-                        section.top_margin, section.bottom_margin = Pt(min(max(mt, 14.0), 36.0)), Pt(min(max(mb, 14.0), 36.0))
+                        pos_margins.append((number - 1, [min(max(v, 14.0), 36.0) for v in (ml, mr, mt, mb)]))
                         if progress:
                             progress(number, total)
                         continue
@@ -2043,6 +2080,11 @@ class PDFProcessor:
                             cursor = add_image(item, ml, mr, rect.width, cursor)
                 if progress:
                     progress(number, total)
+        if pos_margins:  # sabit konumlu sayfalarda boşluklar yerleşimi etkilemez: tüm sayfalarda aynı (en küçük) boşluk
+            lo = [min(m[i] for _s, m in pos_margins) for i in range(4)]
+            for si, _m in pos_margins:  # bölüm vekilleri yeni bölüm eklenince kayar: sırayla yeniden al
+                sec = out.sections[si]
+                sec.left_margin, sec.right_margin, sec.top_margin, sec.bottom_margin = (Pt(v) for v in lo)
         body_marks.append(len(out.element.body))
         for n, el in enumerate(out.element.body.iter(qn("wp:docPr")), 1):  # çizim kimlikleri benzersiz olmalı
             el.set("id", str(n))

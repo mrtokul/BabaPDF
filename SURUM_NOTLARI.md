@@ -7,6 +7,20 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.12 — 28.10.2026
+Düzeltilen (Word'e kaydet, sabit konumlu sayfa; kalan ~%1'lik konum hatası)
+- Numaralı maddeler («3. tuşuna basın») artık madde imi gibi sekmeyle kuruluyor; numara ile yazı arasındaki boşluk PDF'tekiyle aynı.
+- Her satırda yatay ölçek (tam sayı yüzde) sonrası kalan fark, karakter aralığıyla (`w:spacing`, en çok ±2 pt) giderilir; 3–5 pt'lik birikimli kaymalar azaldı.
+Ölçüm (LibreOffice → PDF, sözcük merkezi 3 pt'ten fazla kayık, A3 ABB kılavuzu): sayfa 1'de 72 → 45, sayfa 2'de 27 → 30 sözcük. Gerçek Word'de ölçüm kullanıcıdadır.
+
+## 1.12.11 — 28.10.2026
+Düzeltilen (Word'e kaydet, sabit konumlu sayfa; A3 ABB kılavuzu gerçek Word ile ölçüldü)
+- Ortalı / sağa yaslı yazı kutuları (tablo başlıkları «Giriş (U1, V1, W1)», «Motor», «Fren») Word'de ~370 pt sağa kaçıyordu; artık sola yaslı, satır başı girintisiyle kuruluyor.
+- Madde imi ile yazı arasındaki boşluk (PDF'te ≈7 pt) Word'de tek boşluğa düşüyordu; artık sekmeyle PDF'teki yere konuyor.
+- Kenar boşlukları sayfadan sayfaya değişiyordu (sağ 14 / 36 pt); sabit konumlu sayfalarda hepsi aynı (en küçük) değer.
+Ölçüm (Word → PDF, sözcük merkezi 3 pt'ten fazla kayık): sayfa 1'de 153 → 58, sayfa 2'de 64 → 19.
+Bilinen sınır: PDF'te eğik görünen ama yazı tipi adı/bayrağı eğik olmayan yazılar (ör. «Guide for capacitor reforming») Word'de düz çıkar.
+
 ## 1.12.10 — 28.10.2026
 Düzeltilen
 - Satır genişliği ölçümü (1.12.9) Windows dışı ortamlarda ve testlerde gömülü Helvetica ile yapılıyordu; bu yazı tipinde ş, ğ, ı gibi Türkçe harflerin genişliği 0 sayıldığından satırlar %20–30 fazla genişletiliyordu. Windows yazı tipi yoksa artık ölçü uyumlu Liberation yazı tipleri kullanılır. Windows'ta davranış değişmedi (gerçek Arial/Times/Courier).

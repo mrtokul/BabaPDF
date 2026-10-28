@@ -385,3 +385,18 @@ def test_sabit_genislikli_etiketin_bas_bosluklari_atilir():
 def test_satir_genisligi_yedek_yazi_tipine_gore_olculur():
     st = {"font": "Arial", "size": 10.0, "bold": False, "italic": False}
     assert g._of_run_width("Merhaba dünya", st) > g._of_run_width("Merhaba", st) > 0
+
+
+def test_numarali_madde_sekmeyle_ve_aralikla(tmp_path):
+    """1.12.12: «3. yazı» satırı sekme içerir, yazı tekrarlanmaz."""
+    import fitz, re, zipfile
+    pdf = tmp_path / "n.pdf"
+    d = fitz.open(); pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 100), "3.", fontsize=9)
+    pg.insert_text((90, 100), "tusuna basin ve bekleyin.", fontsize=9)
+    d.save(pdf)
+    out = tmp_path / "n.docx"
+    P.export_docx(str(pdf), str(out), editable=True)
+    if True:
+        x = zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+        assert x.count("tusuna") == 1
