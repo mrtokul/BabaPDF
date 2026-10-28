@@ -319,3 +319,22 @@ def test_yan_yazili_donuk_sayfada_metin_kaybolmaz(tmp_path):
     doc = g._of_open(yol)
     assert "Alt uc metni" in doc[0].get_text()
     assert all(p.rotation == 0 for p in doc)
+
+
+def test_word_dosyasi_acilista_uyari_cikarmaz(rapor_pdf, tmp_path):
+    """Word'ün «okunamayan içerik» / «Uyumluluk Modu» uyarılarına yol açan yapı hataları bulunmaz."""
+    import re
+    import zipfile
+    out = str(tmp_path / "u.docx")
+    P.export_docx(rapor_pdf, out)
+    z = zipfile.ZipFile(out)
+    xml = z.read("word/document.xml").decode("utf-8")
+    ids = re.findall(r'<wp:docPr id="(\d+)"', xml)
+    assert len(ids) == len(set(ids))                       # çizim kimlikleri benzersiz
+    for blok in re.findall(r"<w:tblPr>.*?</w:tblPr>", xml, re.S):
+        sira = [m for m in re.findall(r"<w:(tblStyle|tblW|jc|tblInd|tblBorders|tblLayout|tblCellMar|tblLook)\b", blok)]
+        assert sira == sorted(sira, key=g._OF_TBLPR.index)  # tblPr çocukları şema sırasında
+    assert 'w:name="compatibilityMode"' in z.read("word/settings.xml").decode("utf-8")
+    assert re.search(r'compatibilityMode"[^>]*w:val="15"', z.read("word/settings.xml").decode("utf-8"))
+    assert not any(n.endswith("thumbnail.jpeg") for n in z.namelist())
+    assert "python-docx" not in z.read("docProps/core.xml").decode("utf-8")

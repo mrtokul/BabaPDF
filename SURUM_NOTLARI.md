@@ -7,6 +7,13 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.8 — 28.10.2026
+Düzeltilen
+- Word dosyası açılırken çıkabilecek uyarılar giderildi: «Uyumluluk Modu» (Word 2010 kipi) yerine Word 2013+ kipi; belge özellikleri şablondan kalan «python-docx», 2013 tarihi ve şablon önizleme resmi yerine «Baba PDF» ve gerçek tarih; tablo ve hücre özellikleri şema sırasında yazılır (sırası bozuk öğe Word'de «okunamayan içerik» onarımına yol açabilir).
+- Word'deki web bağlantıları: metin kutusunu taşıyan dış öğe bağlantı sayılıyordu (3 bağlantı yanlış yere yazılıyordu); artık bağlantı kutunun içindeki yazıya uygulanır.
+- Sayfa dışına taşan (negatif konumlu) metin kutuları sayfa kenarına çekilir.
+- Test: Word dosyasının yapı denetimi (kimlik benzersizliği, tablo özellik sırası, uyumluluk kipi, şablon artıkları).
+
 ## 1.12.7 — 28.10.2026
 Düzeltilen
 - Word/PowerPoint, karmaşık sayfa: Arial, Helvetica, Times gibi Office'te gerçek karşılığı olan yazı tiplerine artık yatay ölçek uygulanmaz (önceden yazılar %4–11 genişletilip komşu yazıların üstüne taşabiliyordu). Genişlik ölçümü iki yana yaslı satırları saymaz (boşlukları gerilmiş olduğundan ölçü şişiyordu).

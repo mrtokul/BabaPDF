@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.7"
+APP_VERSION = "1.12.8"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -753,6 +753,24 @@ def _of_font_known(raw):
     name = re.sub(r"(PSMT|MT|PS)$", "", base.split(",")[0].split("-")[0])
     name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name).strip()
     return name.lower() in _OF_KNOWN
+
+
+_OF_TBLPR = ("tblStyle", "tblpPr", "tblOverlap", "bidiVisual", "tblStyleRowBandSize", "tblStyleColBandSize", "tblW", "jc",
+             "tblCellSpacing", "tblInd", "tblBorders", "shd", "tblLayout", "tblCellMar", "tblLook", "tblCaption", "tblDescription")
+_OF_TCPR = ("cnfStyle", "tcW", "gridSpan", "hMerge", "vMerge", "tcBorders", "shd", "noWrap", "tcMar", "textDirection",
+            "tcFitText", "vAlign", "hideMark")
+
+
+def _of_ordered_insert(parent, element, order):
+    """XML öğesini şemadaki sıraya göre ekler (Word, sırası bozuk öğeyi «okunamayan içerik» diye onarır)."""
+    name = element.tag.split("}")[1]
+    rank = order.index(name)
+    for child in list(parent):
+        cname = child.tag.split("}")[1]
+        if cname in order and order.index(cname) > rank:
+            child.addprevious(element)
+            return
+    parent.append(element)
 
 
 def _of_text(value):
@@ -1631,7 +1649,7 @@ class PDFProcessor:
             ind = OxmlElement("w:tblInd")
             ind.set(qn("w:w"), str(int(max(cols[0][0]["bbox"].x0 - left, 0) * 20)))
             ind.set(qn("w:type"), "dxa")
-            tbl._tbl.tblPr.append(ind)
+            _of_ordered_insert(tbl._tbl.tblPr, ind, _OF_TBLPR)
             starts = [g[0]["bbox"].x0 for g in cols]
             ends = starts[1:] + [max(i["bbox"].x1 for i in cols[-1])]
             for j, group in enumerate(cols):
@@ -1678,7 +1696,7 @@ class PDFProcessor:
             ind = OxmlElement("w:tblInd")
             ind.set(qn("w:w"), str(int(max(xs[0] - left, 0) * 20)))
             ind.set(qn("w:type"), "dxa")
-            props.append(ind)
+            _of_ordered_insert(props, ind, _OF_TBLPR)
             for i, row in enumerate(tbl.rows):
                 row.height = Pt(max(ys[i + 1] - ys[i], 4))
                 row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
@@ -1694,7 +1712,7 @@ class PDFProcessor:
                     shade.set(qn("w:val"), "clear")
                     shade.set(qn("w:color"), "auto")
                     shade.set(qn("w:fill"), "%02X%02X%02X" % fill)
-                    cell._tc.get_or_add_tcPr().append(shade)
+                    _of_ordered_insert(cell._tc.get_or_add_tcPr(), shade, _OF_TCPR)
                 blocks = _of_cell_blocks(page, fitz.Rect(rect.x0 + 0.5, rect.y0 + 0.5, rect.x1 - 0.5, rect.y1 - 0.5), hlines)
                 first = True
                 for info in blocks:
@@ -1751,6 +1769,7 @@ class PDFProcessor:
                 slack = 0.15 * (x1 - x0) + 10
                 bx = {"left": x0, "justify": x0, "center": x0 - slack / 2, "right": x0 - slack}[align]
                 width = x1 - x0 + slack
+                bx = max(bx, 0.0)
                 para = out.add_paragraph()
                 # justify: Word sert satır sonuyla biten satırları kutu genişliğine gerer; sola hizala
                 para.paragraph_format.alignment = alignments["left" if align == "justify" else align]
@@ -1863,7 +1882,8 @@ class PDFProcessor:
             for i, links in enumerate(page_links):
                 if not links:
                     continue
-                runs = [r for c in children[body_marks[i]:body_marks[i + 1]] for r in c.iter(qn("w:r"))]
+                runs = [r for c in children[body_marks[i]:body_marks[i + 1]] for r in c.iter(qn("w:r"))
+                        if not any(True for _d in r.iter(qn("w:drawing")))]  # metin kutusunu taşıyan dış koşu bağlantı olmaz
                 texts = ["".join(t.text or "" for t in r.iter(qn("w:t"))).strip() for r in runs]
                 used = set()
                 for text, uri in links:
@@ -1879,6 +1899,24 @@ class PDFProcessor:
                         link.append(r)
                         break
         except Exception:  # noqa: BLE001 - bağlantılar eklenemezse belge yine kaydedilir
+            pass
+        try:  # Word «Uyumluluk Modu» uyarısı çıkmasın; belge özellikleri şablondan kalmasın
+            import datetime
+            for cs in out.settings.element.iter(qn("w:compatSetting")):
+                if cs.get(qn("w:name")) == "compatibilityMode":
+                    cs.set(qn("w:val"), "15")
+            for sp in list(out.settings.element.iter(qn("w:savePreviewPicture"))):
+                sp.getparent().remove(sp)
+            cp = out.core_properties
+            cp.author = cp.last_modified_by = "Baba PDF"
+            cp.title = os.path.splitext(os.path.basename(pdf_path))[0]
+            cp.comments = ""
+            cp.created = cp.modified = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None, microsecond=0)
+            pkg = out.part.package
+            for rid, rel in list(pkg.rels.items()):
+                if rel.reltype.endswith("/thumbnail"):  # şablonun önizleme resmi
+                    pkg.rels.pop(rid)
+        except Exception:  # noqa: BLE001 - özellikler ayarlanamazsa belge yine kaydedilir
             pass
         out.save(output_path)
 
