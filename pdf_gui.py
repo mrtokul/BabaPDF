@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.3"
+APP_VERSION = "1.12.4"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -1504,11 +1504,12 @@ class PDFProcessor:
         return found
 
     @staticmethod
-    def export_docx(pdf_path, output_path, editable=True, progress=None):
+    def export_docx(pdf_path, output_path, editable=True, progress=None, layout="auto"):
         """Word (.docx): editable=True sayfa düzenini korur: sayfa boyutu ve kenar boşlukları, yazı tipi/boyut/renk,
         kalın-italik-altı çizili, hizalama ve girinti, satır aralığı, gerçek tablolar (birleşik hücre ve zemin rengi
         dahil), resimler ve vektör şekiller (resim olarak) yerinde, sütunlu sayfalarda okuma sırası. Metinsiz
-        (taranmış) sayfalar ve editable=False durumunda sayfa resim olarak konur."""
+        (taranmış) sayfalar ve editable=False durumunda sayfa resim olarak konur. layout="flow" karmaşık sayfalarda da
+        sabit konumlu kipi kapatır (akışlı, kolay düzenlenir). PDF web bağlantıları Word bağlantısı olur."""
         import io
         from collections import Counter
         from docx import Document
@@ -1755,6 +1756,7 @@ class PDFProcessor:
                 para._p.get_or_add_pPr().insert(0, fr)
             return True
 
+        body_marks, page_links = [], []
         with _of_open(pdf_path) as doc:
             total = len(doc)
             normal = out.styles["Normal"]
@@ -1762,6 +1764,12 @@ class PDFProcessor:
             normal.paragraph_format.space_before = Pt(0)
             for number, page in enumerate(doc, 1):
                 rect = page.rect
+                body_marks.append(len(out.element.body))
+                try:
+                    page_links.append([(_of_text(page.get_textbox(lk["from"])).strip(), lk["uri"]) for lk in page.get_links()
+                                       if lk.get("kind") == fitz.LINK_URI and lk.get("uri")])
+                except Exception:  # noqa: BLE001
+                    page_links.append([])
                 section = out.sections[0] if number == 1 else out.add_section(WD_SECTION.NEW_PAGE)
                 if number > 1:
                     marker = out.paragraphs[-1]  # bölüm sonu paragrafı sayfayı taşırmasın
@@ -1781,7 +1789,7 @@ class PDFProcessor:
                     par.add_run().add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), width=Pt(rect.width - 3))
                 else:
                     items, (ml, mr, mt, mb), hlines, fills = _of_page_items(doc, page)
-                    if _of_is_complex(_of_columns(items, ml, rect.width - mr)) and add_positioned(doc, page, rect, hlines, number):
+                    if layout != "flow" and _of_is_complex(_of_columns(items, ml, rect.width - mr)) and add_positioned(doc, page, rect, hlines, number):
                         section.left_margin, section.right_margin = Pt(min(max(ml, 14.0), 36.0)), Pt(min(max(mr, 14.0), 36.0))
                         section.top_margin, section.bottom_margin = Pt(min(max(mt, 14.0), 36.0)), Pt(min(max(mb, 14.0), 36.0))
                         if progress:
@@ -1809,6 +1817,30 @@ class PDFProcessor:
                             cursor = add_image(item, ml, mr, rect.width, cursor)
                 if progress:
                     progress(number, total)
+        body_marks.append(len(out.element.body))
+        try:
+            from docx.opc.constants import RELATIONSHIP_TYPE as RT
+            children = list(out.element.body)
+            for i, links in enumerate(page_links):
+                if not links:
+                    continue
+                runs = [r for c in children[body_marks[i]:body_marks[i + 1]] for r in c.iter(qn("w:r"))]
+                texts = ["".join(t.text or "" for t in r.iter(qn("w:t"))).strip() for r in runs]
+                used = set()
+                for text, uri in links:
+                    if not text:
+                        continue
+                    for k, (r, t) in enumerate(zip(runs, texts)):
+                        if k in used or t != text or r.getparent() is None or r.getparent().tag == qn("w:hyperlink"):
+                            continue
+                        used.add(k)
+                        link = OxmlElement("w:hyperlink")
+                        link.set(qn("r:id"), out.part.relate_to(uri, RT.HYPERLINK, is_external=True))
+                        r.addprevious(link)
+                        link.append(r)
+                        break
+        except Exception:  # noqa: BLE001 - bağlantılar eklenemezse belge yine kaydedilir
+            pass
         out.save(output_path)
 
     @staticmethod
@@ -6593,6 +6625,15 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
             if answer is None:
                 return
             editable = answer
+        layout = "auto"
+        if kind == "docx" and editable:
+            flow = messagebox.askyesnocancel(
+                "Word sayfa düzeni",
+                "Evet: otomatik (karmaşık sayfalar görünüme sadık, sabit konumlu; önerilir)\n"
+                "Hayır: tümü akışlı metin (düzenlemesi çok kolay, görünüm değişebilir)\nİptal: vazgeç", parent=self)
+            if flow is None:
+                return
+            layout = "auto" if flow else "flow"
         base = os.path.splitext(os.path.basename(self.pdf_path or "belge"))[0]
         path = filedialog.asksaveasfilename(title=f"{program} olarak kaydet", defaultextension=ext,
                                             initialfile=base + ext, filetypes=[(label, "*" + ext)], parent=self)
@@ -6602,7 +6643,7 @@ class PDFViewer(TkinterDnD.Tk if DND_AVAILABLE else tk.Tk):
 
         def work(source):
             if kind == "docx":
-                PDFProcessor.export_docx(source, path, editable=editable)
+                PDFProcessor.export_docx(source, path, editable=editable, layout=layout)
             elif kind == "xlsx":
                 result["tables"] = PDFProcessor.export_xlsx(source, path)
             else:

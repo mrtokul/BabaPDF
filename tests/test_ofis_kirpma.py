@@ -247,3 +247,25 @@ def test_powerpoint_karisik_boyutlu_sayfalar_slayda_sigar(tmp_path):
         for s in slide.shapes:
             assert s.left >= 0 and s.top >= 0
             assert s.left + s.width <= prs.slide_width + 10 and s.top + s.height <= prs.slide_height + 10
+
+
+def test_word_web_baglantisi_korunur(tmp_path):
+    from docx import Document
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Site: ", fontsize=12)
+    page.insert_text((120, 100), "ornek.com", fontsize=12)
+    page.insert_link({"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(118, 88, 190, 106), "uri": "https://ornek.com/x"})
+    yol = str(tmp_path / "l.pdf")
+    doc.save(yol)
+    out = str(tmp_path / "l.docx")
+    P.export_docx(yol, out)
+    hedefler = [r.target_ref for r in Document(out).part.rels.values() if r.is_external]
+    assert "https://ornek.com/x" in hedefler
+
+
+def test_word_akisli_secenek_sabit_konumu_kapatir(rapor_pdf, tmp_path):
+    from docx import Document
+    out = str(tmp_path / "f.docx")
+    P.export_docx(rapor_pdf, out, layout="flow")
+    assert Document(out).paragraphs

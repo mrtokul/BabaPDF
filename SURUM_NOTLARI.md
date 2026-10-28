@@ -7,6 +7,11 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.4 — 28.10.2026
+Yeni
+- Word'e kaydet: PDF'teki web bağlantıları Word bağlantısı olarak korunur.
+- Word'e kaydet: düzenlenebilir seçilince «Sayfa düzeni» sorusu: otomatik (karmaşık sayfalar görünüme sadık) ya da tümü akışlı metin (düzenlemesi kolay).
+
 ## 1.12.3 — 28.10.2026
 Düzeltilen
 - Office'e kaydet: döndürülmüş (/Rotate) sayfalar artık doğru okunur; önceden Word çıktısı 1 sayfadan 4'e şişiyor, PowerPoint'te metin kutusu hiç oluşmuyordu. Yatay yazılı içerikte sayfanın dönüklüğü kaldırılır, yan yazılı (görünüşte dik) içerikte sayfa görünen yönüyle yeniden kurulur.
