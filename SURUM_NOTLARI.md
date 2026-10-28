@@ -7,6 +7,10 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.5 — 28.10.2026
+Düzeltilen
+- Word'de karmaşık sayfalarda yazıların bozulması/karışması: sabit konumlu yazılar Word çerçevesi (framePr) yerine metin kutusu olarak yazılır. Word çerçeveleri üst üste bindiğinde kayıyor; metin kutuları birbirinden bağımsızdır. Çizim kimlikleri benzersiz yapıldı. LibreOffice'te konum farkı değişmedi (yaklaşık −0,5 pt dikey); Word'de görünüm sizin denemenize bağlıdır.
+
 ## 1.12.4 — 28.10.2026
 Yeni
 - Word'e kaydet: PDF'teki web bağlantıları Word bağlantısı olarak korunur.

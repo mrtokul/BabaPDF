@@ -210,7 +210,7 @@ def test_word_karmasik_sayfa_sabit_konumlu(tmp_path):
     out = str(tmp_path / "b.docx")
     P.export_docx(src, out)
     xml = zipfile.ZipFile(out).read("word/document.xml").decode()
-    assert "w:framePr" in xml and "behindDoc" in xml
+    assert "wps:txbx" in xml and "behindDoc" in xml and "w:framePr" not in xml
     with pymupdf.open(src) as d:
         assert len(d) == 1
 

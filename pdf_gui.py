@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.4"
+APP_VERSION = "1.12.5"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -1516,8 +1516,8 @@ class PDFProcessor:
         from docx.enum.section import WD_SECTION
         from docx.enum.table import WD_ROW_HEIGHT_RULE
         from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-        from docx.oxml import OxmlElement
-        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement, parse_xml
+        from docx.oxml.ns import nsdecls, qn
         from docx.shared import Pt, RGBColor
 
         out = Document()
@@ -1691,8 +1691,11 @@ class PDFProcessor:
 
         K_BASE = 0.8
 
+        tb_id = [0]
+
         def add_positioned(doc, page, rect, hlines, number):
-            """Karmaşık sayfa: arka plan resmi (çizgi/şekil/resim) + her yazı bloğu sayfada sabit konumlu yazı çerçevesi."""
+            """Karmaşık sayfa: arka plan resmi (çizgi/şekil/resim) + her yazı bloğu sayfada sabit konumlu metin kutusu
+            (Word çerçeveleri üst üste binince kayar; metin kutuları birbirinden bağımsızdır)."""
             from copy import deepcopy
             from lxml import etree
             blocks = _of_page_blocks(page, hlines)
@@ -1748,12 +1751,29 @@ class PDFProcessor:
                                 st = dict(st, size=max(sizes))  # madde imi satırı büyütmesin
                             last_run = para.add_run(text)
                             style_run(last_run, st)
-                fr = OxmlElement("w:framePr")
                 top = info.get("base0", y0 + line_h * 0.8) - K_BASE * pitch
-                for key, val in (("w:w", width * 20), ("w:hSpace", 0), ("w:wrap", "none"), ("w:vAnchor", "page"),
-                                 ("w:hAnchor", "page"), ("w:x", bx * 20), ("w:y", top * 20)):
-                    fr.set(qn(key), str(int(val)) if not isinstance(val, str) else val)
-                para._p.get_or_add_pPr().insert(0, fr)
+                height = len(info["lines"]) * pitch * 1.35 + 6   # Word kutu dışına taşan yazıyı keser: pay bırak
+                tb_id[0] += 1
+                box = parse_xml(
+                    '<w:r %s xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+                    '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+                    '<mc:Choice Requires="wps"><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="%d" '
+                    'behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+                    '<wp:positionH relativeFrom="page"><wp:posOffset>%d</wp:posOffset></wp:positionH>'
+                    '<wp:positionV relativeFrom="page"><wp:posOffset>%d</wp:posOffset></wp:positionV>'
+                    '<wp:extent cx="%d" cy="%d"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>'
+                    '<wp:docPr id="%d" name="Yazi %d"/><wp:cNvGraphicFramePr/>'
+                    '<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+                    '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm>'
+                    '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr>'
+                    '<wps:txbx><w:txbxContent/></wps:txbx>'
+                    '<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t" anchorCtr="0">'
+                    '<a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice></mc:AlternateContent></w:r>'
+                    % (nsdecls("w", "wp", "a"), 251658240 + tb_id[0], int(bx * 12700), int(top * 12700),
+                       int(width * 12700), int(height * 12700), 100000 + tb_id[0], tb_id[0],
+                       int(width * 12700), int(height * 12700)))
+                box.find(".//" + qn("w:txbxContent")).append(para._p)  # paragraf gövdeden kutuya taşınır
+                par._p.append(box)
             return True
 
         body_marks, page_links = [], []
@@ -1818,6 +1838,8 @@ class PDFProcessor:
                 if progress:
                     progress(number, total)
         body_marks.append(len(out.element.body))
+        for n, el in enumerate(out.element.body.iter(qn("wp:docPr")), 1):  # çizim kimlikleri benzersiz olmalı
+            el.set("id", str(n))
         try:
             from docx.opc.constants import RELATIONSHIP_TYPE as RT
             children = list(out.element.body)
