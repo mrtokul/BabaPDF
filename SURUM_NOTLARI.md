@@ -7,6 +7,12 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.1 — 28.10.2026
+Değişen
+- Word dışa aktarma: yoğun/broşür düzenli sayfalar (3+ yan yana sütun ya da çok resimli) artık sayfa görünümünü bozmaz: çizgi, şekil ve resimler arka plan resmi olur, her yazı bloğu sayfada aynı yere sabitlenmiş düzenlenebilir yazı çerçevesi olur (A3 kılavuz örneğinde 2 sayfa → 2 sayfa; önceki sürümde 6 sayfa). Satır sonları korunur; bilgisayarda olmayan özel yazı tipleri Arial/Times'a çevrilir ve gerekirse küçültülür.
+- Aynı satırdaki tablo hücreleri ve madde imi + metin ayrı/birleşik doğru ele alınır; madde imi ve simge yazı tiplerinin özel karakterleri kutu olarak görünmez. PowerPoint da aynı blok ayrıştırmasını kullanır.
+- Önceki sürüm 1.12.0 yalnızca akışlı düzeni yapıyordu; 1.12.1 ona karmaşık sayfa kipini ekler.
+
 ## 1.12.0 — 28.10.2026
 Değişen
 - Word/Excel/PowerPoint olarak kaydet baştan yazıldı; çıktı girdi PDF ile yan yana karşılaştırılarak düzeltildi.

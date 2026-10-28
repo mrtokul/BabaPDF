@@ -191,3 +191,25 @@ def test_powerpoint_tablo_hucreleri_ayri_kutu(rapor_pdf, tmp_path):
     P.export_pptx(rapor_pdf, out)
     boxes = [s.text_frame.text for s in Presentation(out).slides[0].shapes if s.has_text_frame]
     assert "Elma" in boxes and "1.250,50" in boxes
+
+
+def test_word_karmasik_sayfa_sabit_konumlu(tmp_path):
+    """3 sütunlu, çok resimli broşür sayfası: tek sayfa kalır, yazılar sayfada sabit konumlu çerçeve olur."""
+    import zipfile
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 40), False)
+    pix.set_rect(pix.irect, (200, 120, 40))
+    for i in range(3):
+        x = 40 + i * 180
+        page.insert_textbox(pymupdf.Rect(x, 60, x + 160, 400), "Lorem ipsum dolor sit amet consectetur " * 9, fontsize=9)
+        page.insert_image(pymupdf.Rect(x, 420, x + 60, 480), pixmap=pix)
+    page.insert_image(pymupdf.Rect(40, 500, 100, 560), pixmap=pix)
+    src = str(tmp_path / "b.pdf")
+    doc.save(src)
+    out = str(tmp_path / "b.docx")
+    P.export_docx(src, out)
+    xml = zipfile.ZipFile(out).read("word/document.xml").decode()
+    assert "w:framePr" in xml and "behindDoc" in xml
+    with pymupdf.open(src) as d:
+        assert len(d) == 1

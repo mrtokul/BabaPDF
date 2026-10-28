@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.12.1"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -670,6 +670,9 @@ _OF_FONTS = (("arial", "Arial"), ("helvetica", "Arial"), ("liberationsans", "Ari
              ("palatino", "Palatino Linotype"), ("bookantiqua", "Book Antiqua"), ("comicsans", "Comic Sans MS"),
              ("dejavusans", "DejaVu Sans"), ("dejavuserif", "DejaVu Serif"), ("opensans", "Open Sans"),
              ("roboto", "Roboto"), ("lato", "Lato"), ("montserrat", "Montserrat"))
+_OF_KNOWN = {"arial", "times new roman", "courier new", "calibri", "calibri light", "cambria", "verdana", "tahoma", "georgia",
+             "segoe ui", "trebuchet ms", "comic sans ms", "impact", "consolas", "garamond", "palatino linotype",
+             "book antiqua", "century gothic", "arial narrow", "lucida console", "symbol", "aptos", "arial black"}
 _OF_LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"}
 _OF_BULLET = re.compile(r"^\s*([•▪◦●○■□‣⁃·\-–—*]|\d{1,3}[.)]|[a-zA-Z][.)])\s+")
 
@@ -686,15 +689,20 @@ def office_font_name(raw):
     name = base.split(",")[0].split("-")[0]
     name = re.sub(r"(PSMT|MT|PS)$", "", name)
     name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name).strip()
-    return name or "Arial"
+    if name.lower() in _OF_KNOWN:
+        return name
+    if any(w in key for w in ("mono", "courier", "consol", "code", "typewriter")):
+        return "Courier New"
+    if any(w in key for w in ("serif", "times", "georgia", "garamond", "minion", "palatino", "book", "roman")) and "sans" not in key:
+        return "Times New Roman"
+    return "Arial"  # bilgisayarda bulunmayabilecek özel yazı tipi: benzer genişlikte yaygın yazı tipi
 
 
 def _of_text(value):
     text = PDFProcessor._clean_text(value)
     for lig, plain in _OF_LIGATURES.items():
         text = text.replace(lig, plain)
-    for pua in ("\uf0b7", "\uf0a7", "\uf0d8", "\uf0fc", "\uf076", "\uf02d"):
-        text = text.replace(pua, "•")
+    text = re.sub("[\ue000-\uf8ff]", "•", text)  # simge yazı tiplerinin özel alan karakterleri (madde imi vb.)
     return text.replace("­", "")
 
 
@@ -787,9 +795,15 @@ def _of_align(bbox, left, right, nlines=2, justified_hint=False):
     return "left"
 
 
+def _of_bulletish(text):
+    """Satırın başındaki parça madde imi / numara mı (ör. •, 1., a))?"""
+    text = text.strip()
+    return bool(text) and (text in "•▪◦●○■□‣⁃·*" or bool(re.fullmatch(r"\d{1,3}[.)]|[a-zA-Z][.)]", text)))
+
+
 def _of_block_infos(block, hlines):
-    """Bloğu bilgi sözlüklerine çevirir: aynı satırdaki parçalar (madde imi + metin) birleştirilir,
-    madde imiyle başlayan her satır ayrı paragraf olur."""
+    """Bloğu bilgi sözlüklerine çevirir: madde imi + metin aynı satırda birleşir; aynı satırdaki ayrı sütun parçaları
+    (tablo benzeri) ayrı bloklar olur; madde imiyle başlayan her satır ayrı paragraf olur."""
     rows = []
     for line in sorted(block.get("lines", ()), key=lambda ln: (ln["bbox"][1], ln["bbox"][0])):
         if not any(sp.get("text", "").strip() for sp in line.get("spans", ())):
@@ -799,6 +813,9 @@ def _of_block_infos(block, hlines):
             if bottom - top > 0.6 * min(row["bbox"][3] - row["bbox"][1], line["bbox"][3] - line["bbox"][1]):
                 first, second = (row, line) if row["bbox"][0] <= line["bbox"][0] else (line, row)
                 gap = second["bbox"][0] - first["bbox"][2]
+                size = max((sp.get("size", 10.0) for sp in first["spans"]), default=10.0)
+                if not (_of_bulletish(_of_text("".join(sp["text"] for sp in first["spans"]))) or gap < 1.0 * size):
+                    continue  # ayrı sütun parçası: birleştirme
                 spans = list(first["spans"])
                 if gap > 1.0 and spans and not spans[-1]["text"].endswith(" "):
                     spans.append(dict(spans[-1], text=" "))
@@ -809,20 +826,39 @@ def _of_block_infos(block, hlines):
                 break
         else:
             rows.append({"bbox": tuple(line["bbox"]), "spans": list(line["spans"])})
-    groups = []
-    for row in rows:
-        text = _of_text("".join(sp["text"] for sp in row["spans"]))
-        if groups and not _OF_BULLET.match(text):
-            groups[-1].append(row)
+    streams = []  # alt alta duran satır dizileri (yatayda örtüşenler aynı akışta)
+    for row in sorted(rows, key=lambda r: (r["bbox"][1], r["bbox"][0])):
+        best = None
+        for st in streams:
+            last = st[-1]
+            below = row["bbox"][1] >= last["bbox"][1] + 0.5 * (last["bbox"][3] - last["bbox"][1])
+            overlap = min(row["bbox"][2], last["bbox"][2]) - max(row["bbox"][0], last["bbox"][0]) > 0
+            if below and overlap and (best is None or last["bbox"][1] > best[-1]["bbox"][1]):
+                best = st
+        if best is not None:
+            best.append(row)
         else:
-            groups.append([row])
+            streams.append([row])
     result = []
-    for group in groups:
-        bbox = (min(r["bbox"][0] for r in group), min(r["bbox"][1] for r in group),
-                max(r["bbox"][2] for r in group), max(r["bbox"][3] for r in group))
-        info = _of_block_info1({"lines": group, "bbox": bbox}, hlines)
-        if info:
-            result.append(info)
+    for st in streams:
+        st.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
+        groups = []
+        for row in st:
+            text = _of_text("".join(sp["text"] for sp in row["spans"]))
+            if groups and not _OF_BULLET.match(text):
+                groups[-1].append(row)
+            else:
+                groups.append([row])
+        for group in groups:
+            raw = "".join(sp["text"] for r in group for sp in r["spans"])
+            if raw.strip() and all("\ue000" <= ch <= "\uf8ff" or ch.isspace() for ch in raw):
+                continue  # yalnızca simge yazı tipi karakterleri (logo/simge): sayfada resim olarak kalır
+            bbox = (min(r["bbox"][0] for r in group), min(r["bbox"][1] for r in group),
+                    max(r["bbox"][2] for r in group), max(r["bbox"][3] for r in group))
+            info = _of_block_info1({"lines": group, "bbox": bbox}, hlines)
+            if info:
+                result.append(info)
+    result.sort(key=lambda i: (round(i["bbox"][1]), i["bbox"][0]))
     return result
 
 
@@ -833,12 +869,15 @@ def _of_block_info1(block, hlines):
         spans = [(_of_text(sp["text"]), _of_span(sp, hlines)) for sp in line.get("spans", ()) if sp.get("text")]
         if not any(t.strip() for t, _s in spans):
             continue
-        lines.append({"bbox": line["bbox"], "spans": spans})
+        raw = [sp for sp in line.get("spans", ()) if sp.get("text", "").strip()]
+        main = max(raw, key=lambda sp: len(sp["text"].strip())) if raw else None
+        base = main["origin"][1] if main and "origin" in main else line["bbox"][3]
+        lines.append({"bbox": line["bbox"], "spans": spans, "base": base})
     if not lines:
         return None
     pitch = None
     if len(lines) > 1:
-        gaps = [lines[i + 1]["bbox"][1] - lines[i]["bbox"][1] for i in range(len(lines) - 1)]
+        gaps = [lines[i + 1]["base"] - lines[i]["base"] for i in range(len(lines) - 1)]
         gaps = [g for g in gaps if g > 1]
         if gaps:
             pitch = sorted(gaps)[len(gaps) // 2]
@@ -846,11 +885,25 @@ def _of_block_info1(block, hlines):
     size = max(sizes) if sizes else 11.0
     if pitch is None:
         pitch = max(lines[0]["bbox"][3] - lines[0]["bbox"][1], size * 1.15)
+    ratios = []  # özgün yazı tipi, yerine konan (Arial benzeri) yazı tipinden darsa yazıyı küçült: satır sayısı değişmesin
+    for ln in lines:
+        text = "".join(t for t, _s in ln["spans"])
+        if len(text.strip()) < 4:
+            continue
+        w = sum(fitz.get_text_length(t, fontname=("hebo" if s["bold"] else "helv"), fontsize=s["size"]) for t, s in ln["spans"])
+        if w > 0:
+            ratios.append((ln["bbox"][2] - ln["bbox"][0]) / w)
+    if ratios:
+        factor = min(1.0, sorted(ratios)[len(ratios) // 2])
+        if factor < 0.97:
+            factor = max(factor, 0.8)
+            for ln in lines:
+                ln["spans"] = [(t, dict(s, size=round(s["size"] * factor * 2) / 2)) for t, s in ln["spans"]]
     widths = [ln["bbox"][2] - ln["bbox"][0] for ln in lines]
     longest = max(widths)
     justified = len(lines) >= 3 and sum(abs(ln["bbox"][2] - block["bbox"][2]) < 2.0 for ln in lines[:-1]) >= 0.7 * (len(lines) - 1)
     return {"lines": lines, "pitch": pitch, "size": size, "longest": longest, "justified": justified,
-            "bbox": tuple(block["bbox"])}
+            "bbox": tuple(block["bbox"]), "base0": lines[0]["base"]}
 
 
 def _of_join(info):
@@ -1112,6 +1165,57 @@ def _of_col_aligns(page, spans, hlines):
         elif spread0 < 2.5:
             result[c] = "left"
     return result
+
+
+def _of_page_blocks(page, hlines):
+    """Sayfadaki tüm yazı blokları (tablo satırları da sütun parçalarına ayrılmış olarak: konum bilgisi aynen korunur)."""
+    blocks = []
+    flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
+    for block in page.get_text("dict", flags=flags)["blocks"]:
+        if block.get("type") == 0:
+            blocks.extend(_of_block_infos(block, hlines))
+    return blocks
+
+
+def _of_background(doc, index, blocks, dpi=150):
+    """Sayfanın yazısı çıkarılmış görünümü (çizgiler, şekiller, resimler kalır) PNG olarak; olmazsa None."""
+    try:
+        with fitz.open() as tmp:
+            tmp.insert_pdf(doc, from_page=index, to_page=index)
+            tpage = tmp[0]
+            for info in blocks:
+                tpage.add_redact_annot(fitz.Rect(info["bbox"]), fill=False)
+            tpage.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+            return tpage.get_pixmap(dpi=dpi).tobytes("png")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _of_is_complex(items):
+    """Akışlı Word düzeniyle taşınamayacak sayfa: 3+ yan yana sütun ya da çok resimli/çok bloklu broşür düzeni."""
+    if any(it["kind"] == "cols" and len(it["cols"]) >= 3 for it in items):
+        return True
+    pics = sum(1 for it in items if it["kind"] == "image")
+    texts = sum(1 for it in items if it["kind"] == "text")
+    return pics >= 4 and texts >= 12
+
+
+def _of_block_align(info):
+    """Konumu sayfada sabit yazı kutuları için hiza: tek satır sola (başladığı yerden), çok satırlıda satır kenarlarına bakılır."""
+    lines = info["lines"]
+    if len(lines) < 2:
+        return "left"
+    if info["justified"]:
+        return "justify"
+    x0s = [ln["bbox"][0] for ln in lines]
+    x1s = [ln["bbox"][2] for ln in lines]
+    mids = [(a + b) / 2 for a, b in zip(x0s, x1s)]
+    if max(x0s) - min(x0s) > 3:
+        if max(x1s) - min(x1s) < 2:
+            return "right"
+        if max(mids) - min(mids) < 2:
+            return "center"
+    return "left"
 
 
 class PDFProcessor:
@@ -1493,6 +1597,71 @@ class PDFProcessor:
                     fill_par(par, info)
             return table.bbox[3]
 
+        K_BASE = 0.8
+
+        def add_positioned(doc, page, rect, hlines, number):
+            """Karmaşık sayfa: arka plan resmi (çizgi/şekil/resim) + her yazı bloğu sayfada sabit konumlu yazı çerçevesi."""
+            from copy import deepcopy
+            from lxml import etree
+            blocks = _of_page_blocks(page, hlines)
+            bg = _of_background(doc, number - 1, blocks, 130)
+            if bg is None:
+                return False
+            par = out.add_paragraph()
+            pf = par.paragraph_format
+            pf.space_before = pf.space_after = Pt(0)
+            pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            pf.line_spacing = Pt(1)
+            run = par.add_run()
+            run.add_picture(io.BytesIO(bg), width=Pt(rect.width), height=Pt(rect.height))
+            inline = run._element.find(".//" + qn("wp:inline"))
+            ns = {"wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"}
+            anchor = etree.SubElement(inline.getparent(), qn("wp:anchor"), distT="0", distB="0", distL="0", distR="0",
+                                      simplePos="0", relativeHeight="0", behindDoc="1", locked="1", layoutInCell="1",
+                                      allowOverlap="1")
+            sp = etree.SubElement(anchor, qn("wp:simplePos"), x="0", y="0")
+            for tag, axis in (("wp:positionH", "page"), ("wp:positionV", "page")):
+                pos = etree.SubElement(anchor, qn(tag), relativeFrom=axis)
+                etree.SubElement(pos, qn("wp:posOffset")).text = "0"
+            for tag in ("wp:extent", "wp:effectExtent", "wp:docPr", "wp:cNvGraphicFramePr"):
+                el = inline.find(qn(tag))
+                if el is not None:
+                    if tag == "wp:docPr":
+                        anchor.append(etree.Element(qn("wp:wrapNone")))
+                    anchor.append(deepcopy(el))
+            anchor.append(deepcopy(inline.find(qn("a:graphic"))))
+            inline.getparent().remove(inline)
+            del sp, ns
+            for info in blocks:
+                x0, y0, x1, y1 = info["bbox"]
+                align = _of_block_align(info)
+                line_h = max(info["lines"][0]["bbox"][3] - info["lines"][0]["bbox"][1], 1.0)
+                pitch = max(info["pitch"], info["size"] * 1.05)
+                slack = 0.15 * (x1 - x0) + 10
+                bx = {"left": x0, "justify": x0, "center": x0 - slack / 2, "right": x0 - slack}[align]
+                width = x1 - x0 + slack
+                para = out.add_paragraph()
+                para.paragraph_format.alignment = alignments[align]
+                set_spacing(para, info, 0)
+                last_run = None
+                for li, line in enumerate(info["lines"]):  # satır sonları aynen korunur: sayfa düzeni kaymaz
+                    if li and last_run is not None:
+                        last_run.add_break()  # satır sonu, önceki yazının boyutunda (varsayılan boyut satırı büyütmesin)
+                    sizes = [s["size"] for t, s in line["spans"] if t.strip() and len(t.strip()) > 1] or [info["size"]]
+                    for text, st in line["spans"]:
+                        if text:
+                            if len(text.strip()) <= 1 and st["size"] > max(sizes):
+                                st = dict(st, size=max(sizes))  # madde imi satırı büyütmesin
+                            last_run = para.add_run(text)
+                            style_run(last_run, st)
+                fr = OxmlElement("w:framePr")
+                top = info.get("base0", y0 + line_h * 0.8) - K_BASE * pitch
+                for key, val in (("w:w", width * 20), ("w:hSpace", 0), ("w:wrap", "none"), ("w:vAnchor", "page"),
+                                 ("w:hAnchor", "page"), ("w:x", bx * 20), ("w:y", top * 20)):
+                    fr.set(qn(key), str(int(val)) if not isinstance(val, str) else val)
+                para._p.get_or_add_pPr().insert(0, fr)
+            return True
+
         with fitz.open(pdf_path) as doc:
             total = len(doc)
             normal = out.styles["Normal"]
@@ -1519,6 +1688,11 @@ class PDFProcessor:
                     par.add_run().add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), width=Pt(rect.width - 3))
                 else:
                     items, (ml, mr, mt, mb), hlines, fills = _of_page_items(doc, page)
+                    if _of_is_complex(_of_columns(items, ml, rect.width - mr)) and add_positioned(doc, page, rect, hlines, number):
+                        section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Pt(0)
+                        if progress:
+                            progress(number, total)
+                        continue
                     items = _of_columns(items, ml, rect.width - mr)
                     if number == 1:
                         sizes = Counter((it["info"]["lines"][0]["spans"][0][1]["font"], round(it["info"]["size"]))
@@ -1684,39 +1858,9 @@ class PDFProcessor:
                 emu = prs.slide_width / rect.width  # nokta başına EMU
                 font_scale = 960.0 / rect.width     # slayt 960 pt genişliğinde
                 hlines, _fills = _of_marks(page)
-                blocks = []
-                flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
-                try:
-                    tables = [t for t in page.find_tables().tables if t.row_count >= 1 and t.col_count >= 2 and len(t.cells) >= 2]
-                except Exception:  # noqa: BLE001
-                    tables = []
-                tbboxes = [fitz.Rect(t.bbox) for t in tables]
-                for block in page.get_text("dict", flags=flags)["blocks"]:
-                    if block.get("type") == 0:
-                        center = fitz.Point((block["bbox"][0] + block["bbox"][2]) / 2, (block["bbox"][1] + block["bbox"][3]) / 2)
-                        if not any(center in tb for tb in tbboxes):
-                            blocks.extend(_of_block_infos(block, hlines))
-                for table in tables:  # tablo: her hücre ayrı metin kutusu
-                    _xs, _ys, spans = _of_grid(table)
-                    col_align = _of_col_aligns(page, spans, hlines)
-                    for _r0, _c0, _r1, _c1, crect in spans:
-                        for info in _of_cell_blocks(page, fitz.Rect(crect.x0 + 0.5, crect.y0 + 0.5, crect.x1 - 0.5, crect.y1 - 0.5), hlines):
-                            info["cell"] = crect
-                            info["align"] = col_align.get(_c0)
-                            blocks.append(info)
+                blocks = _of_page_blocks(page, hlines)
                 text = PDFProcessor._clean_text(page.get_text("text"))
-                background = None
-                if editable and blocks:
-                    try:
-                        with fitz.open() as tmp:
-                            tmp.insert_pdf(doc, from_page=number - 1, to_page=number - 1)
-                            tpage = tmp[0]
-                            for info in blocks:
-                                tpage.add_redact_annot(fitz.Rect(info["bbox"]), fill=False)
-                            tpage.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE)
-                            background = tpage.get_pixmap(dpi=170).tobytes("png")
-                    except Exception:  # noqa: BLE001 - yazı çıkarılamazsa slayt resim olarak konur
-                        background = None
+                background = _of_background(doc, number - 1, blocks, 170) if editable and blocks else None
                 if background is None:
                     slide.shapes.add_picture(io.BytesIO(page.get_pixmap(dpi=150).tobytes("png")), 0, 0,
                                              prs.slide_width, prs.slide_height)
@@ -1724,17 +1868,11 @@ class PDFProcessor:
                     slide.shapes.add_picture(io.BytesIO(background), 0, 0, prs.slide_width, int(rect.height * emu))
                     for info in blocks:
                         x0, y0, x1, y1 = info["bbox"]
-                        cell = info.get("cell")
-                        align = _of_align(info["bbox"], cell.x0 if cell else 0, cell.x1 if cell else rect.width,
-                                          len(info["lines"]), info["justified"])
-                        if info.get("align"):
-                            align = info["align"]
-                        if cell:
-                            x0, x1 = cell.x0 + 1, cell.x1 - 1
+                        align = _of_block_align(info)
                         line_h = max(info["lines"][0]["bbox"][3] - info["lines"][0]["bbox"][1], 1.0)
                         pitch = max(info["pitch"], info["size"] * 1.05)
                         lead = max(pitch - line_h, 0.0)
-                        slack = 0 if cell else 0.08 * (x1 - x0) + 4
+                        slack = 0.08 * (x1 - x0) + 4
                         bx = {"left": x0, "justify": x0, "center": x0 - slack / 2, "right": x0 - slack}[align]
                         box = slide.shapes.add_textbox(Emu(int(bx * emu)), Emu(int((y0 - lead * 0.8) * emu)),
                                                        Emu(int((x1 - x0 + slack) * emu)), Emu(int((y1 - y0 + lead) * emu)))
