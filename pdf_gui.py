@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.1"
+APP_VERSION = "1.12.2"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -670,6 +670,7 @@ _OF_FONTS = (("arial", "Arial"), ("helvetica", "Arial"), ("liberationsans", "Ari
              ("palatino", "Palatino Linotype"), ("bookantiqua", "Book Antiqua"), ("comicsans", "Comic Sans MS"),
              ("dejavusans", "DejaVu Sans"), ("dejavuserif", "DejaVu Serif"), ("opensans", "Open Sans"),
              ("roboto", "Roboto"), ("lato", "Lato"), ("montserrat", "Montserrat"))
+_OF_SC = float(__import__("os").environ.get("OF_SC", "0.96"))
 _OF_KNOWN = {"arial", "times new roman", "courier new", "calibri", "calibri light", "cambria", "verdana", "tahoma", "georgia",
              "segoe ui", "trebuchet ms", "comic sans ms", "impact", "consolas", "garamond", "palatino linotype",
              "book antiqua", "century gothic", "arial narrow", "lucida console", "symbol", "aptos", "arial black"}
@@ -753,7 +754,7 @@ def _of_span(span, hlines):
                 strike = True
     return {"font": office_font_name(name), "size": size, "bold": bool(flags & 16) or "bold" in low or "black" in low,
             "italic": bool(flags & 2) or "italic" in low or "oblique" in low, "color": span.get("color", 0),
-            "underline": underline, "strike": strike, "sup": bool(flags & 1)}
+            "underline": underline, "strike": strike, "sup": bool(flags & 1), "raw": name}
 
 
 def _of_xy_cut(items):
@@ -881,29 +882,28 @@ def _of_block_info1(block, hlines):
         gaps = [g for g in gaps if g > 1]
         if gaps:
             pitch = sorted(gaps)[len(gaps) // 2]
-    sizes = [s["size"] for ln in lines for _t, s in ln["spans"]]
-    size = max(sizes) if sizes else 11.0
+    weight = {}
+    for ln in lines:  # asıl yazı boyutu: en çok karakterin bulunduğu boyut (madde imi gibi iri simgeler sayılmaz)
+        for t, s in ln["spans"]:
+            weight[s["size"]] = weight.get(s["size"], 0) + len(t.strip())
+    size = max(weight, key=weight.get) if weight else 11.0
     if pitch is None:
         pitch = max(lines[0]["bbox"][3] - lines[0]["bbox"][1], size * 1.15)
-    ratios = []  # özgün yazı tipi, yerine konan (Arial benzeri) yazı tipinden darsa yazıyı küçült: satır sayısı değişmesin
+    samples = []  # (özgün yazı tipi, kalın, satır genişliği / Arial genişliği): sayfa düzeyinde yatay ölçek için
     for ln in lines:
         text = "".join(t for t, _s in ln["spans"])
-        if len(text.strip()) < 4:
+        fonts = {(s["raw"], s["bold"]) for t, s in ln["spans"] if t.strip()}
+        if len(text.strip()) < 6 or len(fonts) != 1:
             continue
+        s0 = next(s for t, s in ln["spans"] if t.strip())
         w = sum(fitz.get_text_length(t, fontname=("hebo" if s["bold"] else "helv"), fontsize=s["size"]) for t, s in ln["spans"])
         if w > 0:
-            ratios.append((ln["bbox"][2] - ln["bbox"][0]) / w)
-    if ratios:
-        factor = min(1.0, sorted(ratios)[len(ratios) // 2])
-        if factor < 0.97:
-            factor = max(factor, 0.8)
-            for ln in lines:
-                ln["spans"] = [(t, dict(s, size=round(s["size"] * factor * 2) / 2)) for t, s in ln["spans"]]
+            samples.append(((s0["raw"], s0["bold"]), (ln["bbox"][2] - ln["bbox"][0]) / w))
     widths = [ln["bbox"][2] - ln["bbox"][0] for ln in lines]
     longest = max(widths)
     justified = len(lines) >= 3 and sum(abs(ln["bbox"][2] - block["bbox"][2]) < 2.0 for ln in lines[:-1]) >= 0.7 * (len(lines) - 1)
     return {"lines": lines, "pitch": pitch, "size": size, "longest": longest, "justified": justified,
-            "bbox": tuple(block["bbox"]), "base0": lines[0]["base"]}
+            "bbox": tuple(block["bbox"]), "base0": lines[0]["base"], "samples": samples}
 
 
 def _of_join(info):
@@ -1174,19 +1174,56 @@ def _of_page_blocks(page, hlines):
     for block in page.get_text("dict", flags=flags)["blocks"]:
         if block.get("type") == 0:
             blocks.extend(_of_block_infos(block, hlines))
+    per_font = {}
+    for info in blocks:
+        for key, ratio in info.get("samples", ()):
+            per_font.setdefault(key, []).append(ratio)
+    allr = sorted(r for v in per_font.values() for r in v)
+    page_med = allr[len(allr) // 2] if allr else 1.0
+    scales = {}
+    for key, v in per_font.items():
+        v.sort()
+        med = v[len(v) // 2] if len(v) >= 3 else page_med
+        scales[key] = med
+    for info in blocks:  # aynı yazı tipi her yerde aynı yatay ölçeği alır: boyut değişmez, yalnız genişlik uyar
+        for ln in info["lines"]:
+            fixed = []
+            for t, st in ln["spans"]:
+                med = scales.get((st["raw"], st["bold"]), page_med)
+                pct = int(max(70, min(125, round(med * 100 * _OF_SC))))
+                fixed.append((t, dict(st, scale=pct if abs(pct - 100) > 3 else 100)))
+            ln["spans"] = fixed
     return blocks
 
 
 def _of_background(doc, index, blocks, dpi=150):
-    """Sayfanın yazısı çıkarılmış görünümü (çizgiler, şekiller, resimler kalır) PNG olarak; olmazsa None."""
+    """Sayfanın yazısı çıkarılmış görünümü (çizgiler, şekiller, resimler kalır) PNG olarak; olmazsa None.
+    Yazı silme (redaction) saydamlık maskeli resimleri bozduğundan (kararır), silinmiş görüntü yalnızca yazı
+    kutularının içinde kullanılır; geri kalan her yer özgün sayfa görüntüsüdür."""
     try:
         with fitz.open() as tmp:
             tmp.insert_pdf(doc, from_page=index, to_page=index)
             tpage = tmp[0]
+            original = tpage.get_pixmap(dpi=dpi)
             for info in blocks:
                 tpage.add_redact_annot(fitz.Rect(info["bbox"]), fill=False)
             tpage.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE)
-            return tpage.get_pixmap(dpi=dpi).tobytes("png")
+            cleaned = tpage.get_pixmap(dpi=dpi)
+        try:
+            from PIL import Image
+            import io
+            base = Image.open(io.BytesIO(original.tobytes("png"))).convert("RGB")
+            clean = Image.open(io.BytesIO(cleaned.tobytes("png"))).convert("RGB")
+            k = dpi / 72.0
+            for info in blocks:
+                x0, y0, x1, y1 = info["bbox"]
+                box = (max(int(x0 * k) - 1, 0), max(int(y0 * k) - 1, 0), min(int(x1 * k) + 2, base.width), min(int(y1 * k) + 2, base.height))
+                base.paste(clean.crop(box), box[:2])
+            out = io.BytesIO()
+            base.save(out, "PNG", optimize=True)
+            return out.getvalue()
+        except ImportError:
+            return cleaned.tobytes("png")
     except Exception:  # noqa: BLE001
         return None
 
@@ -1446,6 +1483,18 @@ class PDFProcessor:
 
         def style_run(run, st):
             run.font.name = st["font"]
+            if st.get("scale", 100) != 100:  # yatay ölçek (%): harf yüksekliği aynı, genişlik yerine konan yazı tipine uyar
+                rpr0 = run._element.get_or_add_rPr()
+                w = OxmlElement("w:w")
+                w.set(qn("w:val"), str(int(st["scale"])))
+                after = [qn(t) for t in ("w:kern", "w:position", "w:sz", "w:szCs", "w:highlight", "w:u", "w:effect",
+                                         "w:bdr", "w:shd", "w:fitText", "w:vertAlign", "w:rtl", "w:cs", "w:em", "w:lang")]
+                nxt = next((c for c in rpr0 if c.tag in after), None)
+                if nxt is not None:
+                    nxt.addprevious(w)
+                else:
+                    rpr0.append(w)
+            run.font.name = st["font"]
             rpr = run._element.get_or_add_rPr()
             fonts = rpr.find(qn("w:rFonts"))
             if fonts is not None:
@@ -1636,13 +1685,15 @@ class PDFProcessor:
                 x0, y0, x1, y1 = info["bbox"]
                 align = _of_block_align(info)
                 line_h = max(info["lines"][0]["bbox"][3] - info["lines"][0]["bbox"][1], 1.0)
-                pitch = max(info["pitch"], info["size"] * 1.05)
+                pitch = max(info["pitch"], info["size"] * 1.05) if len(info["lines"]) > 1 else info["size"] * 1.2
                 slack = 0.15 * (x1 - x0) + 10
                 bx = {"left": x0, "justify": x0, "center": x0 - slack / 2, "right": x0 - slack}[align]
                 width = x1 - x0 + slack
                 para = out.add_paragraph()
                 para.paragraph_format.alignment = alignments[align]
-                set_spacing(para, info, 0)
+                para.paragraph_format.space_before = para.paragraph_format.space_after = Pt(0)
+                para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+                para.paragraph_format.line_spacing = Pt(pitch)
                 last_run = None
                 for li, line in enumerate(info["lines"]):  # satır sonları aynen korunur: sayfa düzeni kaymaz
                     if li and last_run is not None:
@@ -1689,7 +1740,8 @@ class PDFProcessor:
                 else:
                     items, (ml, mr, mt, mb), hlines, fills = _of_page_items(doc, page)
                     if _of_is_complex(_of_columns(items, ml, rect.width - mr)) and add_positioned(doc, page, rect, hlines, number):
-                        section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Pt(0)
+                        section.left_margin, section.right_margin = Pt(min(max(ml, 14.0), 36.0)), Pt(min(max(mr, 14.0), 36.0))
+                        section.top_margin, section.bottom_margin = Pt(min(max(mt, 14.0), 36.0)), Pt(min(max(mb, 14.0), 36.0))
                         if progress:
                             progress(number, total)
                         continue
@@ -1890,7 +1942,7 @@ class PDFProcessor:
                                 run = paragraph.add_run()
                                 run.text = chunk
                                 run.font.name = st["font"]
-                                run.font.size = Pt(max(4, min(round(st["size"] * font_scale * 2) / 2, 200)))
+                                run.font.size = Pt(max(4, min(round(st["size"] * font_scale * max(st.get("scale", 100) / 100.0, 0.88) * 2) / 2, 200)))
                                 run.font.bold = st["bold"]
                                 run.font.italic = st["italic"]
                                 if st["underline"]:

@@ -7,6 +7,13 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.2 — 28.10.2026
+Değişen
+- Word (karmaşık/broşür sayfalar): harf büyüklükleri artık özgün boyutta kalır; yazı tipi yerine konunca genişlik farkı, harf boyunu küçültmek yerine her yazı tipi için sayfa düzeyinde tek bir yatay ölçekle (Word «ölçek %») giderilir. Böylece tablo hücreleri ve satırlar arasında boyut tutarsızlığı kalmaz. Tek satırlık yazılar için satır yüksekliği doğal değere yakın tutuldu (Word ile LibreOffice arası dikey kayma azalır); madde imi gibi iri simgeler satır aralığını şişirmez.
+- Kenar boşlukları: sabit konumlu sayfalarda sıfır kenar boşluğu yerine sayfadaki içerik boşluğu (en az 14, en çok 36 nokta) kullanılır.
+- Arka plan resmi: yazı silme işlemi saydamlık maskeli resimleri (ör. simgeler) karartıyordu; yazı yalnızca yazı kutularının içinde silinir, kalan alan özgün görüntüdür. Dosya da küçüldü.
+- PowerPoint aynı arka planı ve yatay ölçeği (en çok %12 daralma ile) kullanır.
+
 ## 1.12.1 — 28.10.2026
 Değişen
 - Word dışa aktarma: yoğun/broşür düzenli sayfalar (3+ yan yana sütun ya da çok resimli) artık sayfa görünümünü bozmaz: çizgi, şekil ve resimler arka plan resmi olur, her yazı bloğu sayfada aynı yere sabitlenmiş düzenlenebilir yazı çerçevesi olur (A3 kılavuz örneğinde 2 sayfa → 2 sayfa; önceki sürümde 6 sayfa). Satır sonları korunur; bilgisayarda olmayan özel yazı tipleri Arial/Times'a çevrilir ve gerekirse küçültülür.
