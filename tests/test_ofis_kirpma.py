@@ -117,6 +117,29 @@ def test_excel_aktarimi_tablo_ve_metin(pdf_path, tmp_path):
     assert [c.value for c in sheet[2]] == [1, "sadece metin"]
 
 
+def test_excel_tablo_disi_baslik_metin_sayfasina_yazilir(tmp_path):
+    from openpyxl import load_workbook
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Tablo disi baslik", fontsize=14)
+    for x in (72, 172, 272):
+        page.draw_line((x, 200), (x, 260))
+    for y in (200, 230, 260):
+        page.draw_line((72, y), (272, y))
+    for r, row in enumerate((("Ad", "Deger"), ("Elma", "5"))):
+        for c, cell in enumerate(row):
+            page.insert_text((80 + c * 100, 220 + r * 30), cell, fontsize=10)
+    path = str(tmp_path / "t.pdf")
+    doc.save(path)
+    out = str(tmp_path / "t.xlsx")
+    tables = P.export_xlsx(path, out)
+    if not tables:
+        pytest.skip("ortamda tablo bulunamadı")
+    book = load_workbook(out)
+    assert "Metin" in book.sheetnames
+    assert any("Tablo disi baslik" in str(r[1]) for r in book["Metin"].iter_rows(min_row=2, values_only=True))
+
+
 def test_powerpoint_aktarimi(pdf_path, tmp_path):
     from pptx import Presentation
     for editable in (True, False):
@@ -269,3 +292,30 @@ def test_word_akisli_secenek_sabit_konumu_kapatir(rapor_pdf, tmp_path):
     out = str(tmp_path / "f.docx")
     P.export_docx(rapor_pdf, out, layout="flow")
     assert Document(out).paragraphs
+
+
+def test_bilinen_yazi_tipi_yatay_olcek_almaz(rapor_pdf):
+    """Arial/Helvetica gibi Office'te gerçek karşılığı olan yazı tipleri, yedek yazı tipi ölçeğinden etkilenmez."""
+    doc = pymupdf.open(rapor_pdf)
+    page = doc[0]
+    hlines, _fills = g._of_marks(page)
+    blocks = g._of_page_blocks(page, hlines)
+    scales = {st["scale"] for b in blocks for ln in b["lines"] for t, st in ln["spans"] if t.strip()}
+    assert scales == {100}
+
+
+def test_yan_yazili_donuk_sayfada_metin_kaybolmaz(tmp_path):
+    kaynak = pymupdf.open()
+    sayfa = kaynak.new_page(width=792, height=612)
+    for i in range(12):
+        sayfa.insert_text((72, 60 + i * 40), f"Satir {i} yan yazili deneme metni", fontsize=12)
+    sayfa.insert_text((72, 590), "Alt uc metni", fontsize=12)
+    yol = str(tmp_path / "y.pdf")
+    yan = pymupdf.open()
+    q = yan.new_page(width=612, height=792)
+    q.show_pdf_page(q.rect, kaynak, 0, rotate=90)  # içerikte yan yazı
+    q.set_rotation(270)                             # görünüşte dik
+    yan.save(yol)
+    doc = g._of_open(yol)
+    assert "Alt uc metni" in doc[0].get_text()
+    assert all(p.rotation == 0 for p in doc)

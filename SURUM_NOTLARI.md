@@ -7,6 +7,18 @@ Sürüm numarası `MAJOR.MINOR.PATCH` biçimindedir ve `pdf_gui.py` içindeki `A
 - **MINOR** — yeni özellik eklenen sürüm (mevcut özellikler korunur).
 - **PATCH** — yalnızca hata düzeltme, metin/görünüm ince ayarı, paket sürümü güncellemesi.
 
+## 1.12.7 — 28.10.2026
+Düzeltilen
+- Word/PowerPoint, karmaşık sayfa: Arial, Helvetica, Times gibi Office'te gerçek karşılığı olan yazı tiplerine artık yatay ölçek uygulanmaz (önceden yazılar %4–11 genişletilip komşu yazıların üstüne taşabiliyordu). Genişlik ölçümü iki yana yaslı satırları saymaz (boşlukları gerilmiş olduğundan ölçü şişiyordu).
+- Döndürülmüş yan yazılı sayfa: görünür alan dışında kalan metin artık kesilmiyor (kaynak sayfanın dönüklüğü önce kaldırılıyor).
+- Testler: bilinen yazı tipi ölçeği ve yan yazılı döndürülmüş sayfa.
+
+## 1.12.6 — 28.10.2026
+Düzeltilen
+- Excel: tablo dışı yazı (başlık, açıklama, madde metni, tablosuz sayfalar) artık «Metin» sayfasına `[sayfa, satır]` olarak yazılır. A3 ABB kılavuzunda sözcük kaybı büyük ölçüde kapandı (önce ≈936/3177 sözcük; şimdi tüm sözcükler var, sayılar hücrede sayı olarak durduğu için metin sayımında eksik görünür).
+- Word, karmaşık sayfa: metin kutuları `wrap="none"`; iki yana yaslı bloklar sola hizalanır (Word sert satır sonlu satırları kutu genişliğine geriyordu). Gerçek Word'de denenmedi.
+- Test eklendi: `test_excel_tablo_disi_baslik_metin_sayfasina_yazilir`.
+
 ## 1.12.5 — 28.10.2026
 Düzeltilen
 - Word'de karmaşık sayfalarda yazıların bozulması/karışması: sabit konumlu yazılar Word çerçevesi (framePr) yerine metin kutusu olarak yazılır. Word çerçeveleri üst üste bindiğinde kayıyor; metin kutuları birbirinden bağımsızdır. Çizim kimlikleri benzersiz yapıldı. LibreOffice'te konum farkı değişmedi (yaklaşık −0,5 pt dikey); Word'de görünüm sizin denemenize bağlıdır.

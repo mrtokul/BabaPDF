@@ -31,7 +31,7 @@ except ImportError:
     DND_AVAILABLE = False
 
 APP_NAME = "Baba PDF"
-APP_VERSION = "1.12.5"
+APP_VERSION = "1.12.7"
 APP_DATE = "28.10.2026"
 UNDO_MAX_STEPS = 15
 UNDO_MAX_BYTES = 400 * 1024 * 1024
@@ -705,11 +705,14 @@ def _of_open(path):
         for n in side:
             p = doc[n]
             mb = p.mediabox
-            s = min(p.rect.width / mb.width, p.rect.height / mb.height)
+            view_w, view_h, rot = p.rect.width, p.rect.height, p.rotation
+            words = len(p.get_text().split())
+            s = min(view_w / mb.width, view_h / mb.height)
+            p.set_rotation(0)  # kaynak sayfa döndürülmüşken show_pdf_page görünür alanın dışındaki metni keser
             tmp = fitz.open()
-            q = tmp.new_page(width=p.rect.width * s, height=p.rect.height * s)
-            q.show_pdf_page(q.rect, doc, n, rotate=-p.rotation)
-            if len(q.get_text().split()) >= 0.97 * len(p.get_text().split()):
+            q = tmp.new_page(width=view_w * s, height=view_h * s)
+            q.show_pdf_page(q.rect, doc, n, rotate=-rot)
+            if len(q.get_text().split()) >= 0.97 * words:
                 baked[n] = (tmp, q.rect)
     for n in rotated:
         if n not in baked:
@@ -739,6 +742,17 @@ def office_font_name(raw):
     if any(w in key for w in ("serif", "times", "georgia", "garamond", "minion", "palatino", "book", "roman")) and "sans" not in key:
         return "Times New Roman"
     return "Arial"  # bilgisayarda bulunmayabilecek özel yazı tipi: benzer genişlikte yaygın yazı tipi
+
+
+def _of_font_known(raw):
+    """Yazı tipi Office'te gerçek adıyla bulunuyorsa (Arial, Times, Calibri...) True; özel yazı tipi yedeğe düşer."""
+    base = re.sub(r"^[A-Z]{6}\+", "", raw or "").strip()
+    key = re.sub(r"[^a-z]", "", base.lower().split(",")[0].split("-")[0])
+    if any(key.startswith(prefix) for prefix, _name in _OF_FONTS):
+        return True
+    name = re.sub(r"(PSMT|MT|PS)$", "", base.split(",")[0].split("-")[0])
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name).strip()
+    return name.lower() in _OF_KNOWN
 
 
 def _of_text(value):
@@ -931,8 +945,9 @@ def _of_block_info1(block, hlines):
     size = max(weight, key=weight.get) if weight else 11.0
     if pitch is None:
         pitch = max(lines[0]["bbox"][3] - lines[0]["bbox"][1], size * 1.15)
+    justified = len(lines) >= 3 and sum(abs(ln["bbox"][2] - block["bbox"][2]) < 2.0 for ln in lines[:-1]) >= 0.7 * (len(lines) - 1)
     samples = []  # (özgün yazı tipi, kalın, satır genişliği / Arial genişliği): sayfa düzeyinde yatay ölçek için
-    for ln in lines:
+    for ln in ([] if justified else lines):  # iki yana yaslı satırlar boşlukları gerilmiş olduğundan ölçüme girmez
         text = "".join(t for t, _s in ln["spans"])
         fonts = {(s["raw"], s["bold"]) for t, s in ln["spans"] if t.strip()}
         if len(text.strip()) < 6 or len(fonts) != 1:
@@ -943,7 +958,6 @@ def _of_block_info1(block, hlines):
             samples.append(((s0["raw"], s0["bold"]), (ln["bbox"][2] - ln["bbox"][0]) / w))
     widths = [ln["bbox"][2] - ln["bbox"][0] for ln in lines]
     longest = max(widths)
-    justified = len(lines) >= 3 and sum(abs(ln["bbox"][2] - block["bbox"][2]) < 2.0 for ln in lines[:-1]) >= 0.7 * (len(lines) - 1)
     return {"lines": lines, "pitch": pitch, "size": size, "longest": longest, "justified": justified,
             "bbox": tuple(block["bbox"]), "base0": lines[0]["base"], "samples": samples}
 
@@ -1227,11 +1241,13 @@ def _of_page_blocks(page, hlines):
         v.sort()
         med = v[len(v) // 2] if len(v) >= 3 else page_med
         scales[key] = med
+    seen = {st["raw"] for info in blocks for ln in info["lines"] for _t, st in ln["spans"]}
+    known = {raw for raw in seen if _of_font_known(raw)}  # Office'te gerçek karşılığı olan yazı tipi: ölçek gerekmez
     for info in blocks:  # aynı yazı tipi her yerde aynı yatay ölçeği alır: boyut değişmez, yalnız genişlik uyar
         for ln in info["lines"]:
             fixed = []
             for t, st in ln["spans"]:
-                med = scales.get((st["raw"], st["bold"]), page_med)
+                med = 1.0 / _OF_SC if st["raw"] in known else scales.get((st["raw"], st["bold"]), page_med)
                 pct = int(max(70, min(125, round(med * 100 * _OF_SC))))
                 fixed.append((t, dict(st, scale=pct if abs(pct - 100) > 3 else 100)))
             ln["spans"] = fixed
@@ -1736,7 +1752,8 @@ class PDFProcessor:
                 bx = {"left": x0, "justify": x0, "center": x0 - slack / 2, "right": x0 - slack}[align]
                 width = x1 - x0 + slack
                 para = out.add_paragraph()
-                para.paragraph_format.alignment = alignments[align]
+                # justify: Word sert satır sonuyla biten satırları kutu genişliğine gerer; sola hizala
+                para.paragraph_format.alignment = alignments["left" if align == "justify" else align]
                 para.paragraph_format.space_before = para.paragraph_format.space_after = Pt(0)
                 para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
                 para.paragraph_format.line_spacing = Pt(pitch)
@@ -1767,7 +1784,7 @@ class PDFProcessor:
                     '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm>'
                     '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr>'
                     '<wps:txbx><w:txbxContent/></wps:txbx>'
-                    '<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t" anchorCtr="0">'
+                    '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t" anchorCtr="0">'
                     '<a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice></mc:AlternateContent></w:r>'
                     % (nsdecls("w", "wp", "a"), 251658240 + tb_id[0], int(bx * 12700), int(top * 12700),
                        int(width * 12700), int(height * 12700), 100000 + tb_id[0], tb_id[0],
@@ -1880,6 +1897,7 @@ class PDFProcessor:
         thin = Side(style="thin", color="999999")
         tables_found = 0
         last = None  # önceki tablo: devam kontrolü için
+        outside = []  # tablo dışı metin satırları: [sayfa, satır]
         with _of_open(pdf_path) as doc:
             total = len(doc)
             for number, page in enumerate(doc, 1):
@@ -1900,6 +1918,17 @@ class PDFProcessor:
                                 found.append((t, False))
                     except Exception:  # noqa: BLE001
                         pass
+                # tablo dışı yazı (başlık, açıklama, madde metni; tablosuz sayfalar dahil) kaybolmasın: 'Metin' sayfasına
+                boxes = [fitz.Rect(t.bbox) for t, _r in found]
+                for blk in page.get_text("blocks", sort=True):
+                    if len(blk) > 6 and blk[6] != 0:
+                        continue  # resim bloğu
+                    centre = fitz.Point((blk[0] + blk[2]) / 2, (blk[1] + blk[3]) / 2)
+                    if any(b.contains(centre) for b in boxes):
+                        continue
+                    for line in str(blk[4]).splitlines():
+                        if line.strip():
+                            outside.append([number, clean(line)])
                 for table, ruled in found:
                     xs, ys, spans = _of_grid(table)
                     if len(xs) < 2 or len(ys) < 2 or not spans:
@@ -1978,6 +2007,12 @@ class PDFProcessor:
                     for line in page.get_text("text", sort=True).splitlines():
                         if line.strip():
                             sheet.append([number, clean(line)])
+                sheet.column_dimensions["B"].width = 100
+            elif outside:
+                sheet = book.create_sheet("Metin")
+                sheet.append(["Sayfa", "Metin"])
+                for row in outside:
+                    sheet.append(row)
                 sheet.column_dimensions["B"].width = 100
         book.save(output_path)
         return tables_found
